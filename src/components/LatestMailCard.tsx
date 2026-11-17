@@ -1,15 +1,28 @@
 import React from 'react';
 import { AlertCircle, Check, Copy, MailOpen, RefreshCw } from 'lucide-react';
-import { MAIL_SERVICE_TYPES, type MailboxAccount, type MailServiceType } from '../types/mail';
+import {
+  MAIL_CONNECTION_MODES,
+  MAIL_SERVICE_TYPES,
+  type MailboxAccount,
+  type MailConnectionMode,
+  type MailServiceType,
+} from '../types/mail';
 
 interface LatestMailCardProps {
   activeMailbox: MailboxAccount | null;
   loading: boolean;
   error: string | null;
   copiedValue: string | null;
+  onChangeConnectionMode: (connectionMode: MailConnectionMode) => void;
   onChangeServiceType: (serviceType: MailServiceType) => void;
   onRefresh: () => void;
   onCopyOtp: (code: string) => void;
+}
+
+function formatConnectionModeLabel(mode?: MailConnectionMode): string {
+  if (mode === 'graph') return 'Graph API';
+  if (mode === 'oauth') return 'OAuth2 API';
+  return 'Auto';
 }
 
 export const LatestMailCard: React.FC<LatestMailCardProps> = ({
@@ -17,6 +30,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
   loading,
   error,
   copiedValue,
+  onChangeConnectionMode,
   onChangeServiceType,
   onRefresh,
   onCopyOtp,
@@ -24,6 +38,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
   const code = activeMailbox?.lastCode || '';
   const hasCode = Boolean(code);
   const isCopied = hasCode && copiedValue === `otp:${code}`;
+  const displayError = error || (!hasCode && !activeMailbox?.lastContent ? activeMailbox?.lastError || null : null);
 
   return (
     <section
@@ -40,6 +55,8 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
               <span className="font-medium text-slate-700">{activeMailbox.email}</span>
               <span aria-hidden="true">·</span>
+              <span>{formatConnectionModeLabel(activeMailbox.connectionMode)}</span>
+              <span aria-hidden="true">·</span>
               <span className="capitalize">{activeMailbox.serviceType}</span>
               {activeMailbox.lastDate && (
                 <>
@@ -53,20 +70,35 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {activeMailbox && (
-            <select
-              aria-label="Filter mail by service"
-              value={activeMailbox.serviceType}
-              onChange={(e) => onChangeServiceType(e.target.value as MailServiceType)}
-              className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 capitalize focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
-            >
-              {MAIL_SERVICE_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                aria-label="Connection API mode"
+                value={activeMailbox.connectionMode ?? 'auto'}
+                onChange={(e) => onChangeConnectionMode(e.target.value as MailConnectionMode)}
+                className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
+              >
+                {MAIL_CONNECTION_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {m === 'auto' ? 'Auto' : m === 'graph' ? 'Graph API' : 'OAuth2 API'}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Filter mail by service"
+                value={activeMailbox.serviceType}
+                onChange={(e) => onChangeServiceType(e.target.value as MailServiceType)}
+                className="h-9 rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 capitalize focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
+              >
+                {MAIL_SERVICE_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </>
           )}
 
           <button
@@ -87,7 +119,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <MailOpen className="w-7 h-7 text-slate-400 mx-auto mb-2" aria-hidden="true" />
             <p className="text-sm font-semibold text-slate-800">No active Hotmail account</p>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              Add one or more OAuth2 mailboxes in the Mail Box panel on the left to start 3-second auto-reading.
+              Add one or more OAuth2 or Graph mailboxes in the Mail Box panel on the left to start 3-second auto-reading.
             </p>
           </div>
         ) : loading ? (
@@ -95,7 +127,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <div className="h-20 rounded-xl bg-slate-100" />
             <div className="h-24 rounded-xl bg-slate-100" />
           </div>
-        ) : error ? (
+        ) : displayError ? (
           <div
             role="alert"
             className="flex items-start gap-3 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800"
@@ -103,7 +135,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-rose-600" aria-hidden="true" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold">Could not read verification mail</p>
-              <p className="text-xs text-rose-700 mt-1 break-words">{error}</p>
+              <p className="text-xs text-rose-700 mt-1 break-words">{displayError}</p>
             </div>
           </div>
         ) : activeMailbox.lastContent || hasCode ? (
@@ -158,7 +190,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <MailOpen className="w-7 h-7 text-slate-400 mx-auto mb-2" aria-hidden="true" />
             <p className="text-sm font-semibold text-slate-800">Ready to read {activeMailbox.email}</p>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              Auto-read checks every 3 seconds for 2 hours, or click Read Latest Mail above.
+              Auto-read checks continuously every 3 seconds, or click Read Latest Mail above.
             </p>
           </div>
         )}

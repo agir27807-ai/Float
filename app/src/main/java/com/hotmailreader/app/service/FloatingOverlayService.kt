@@ -30,7 +30,7 @@ import com.hotmailreader.app.MainActivity
 import com.hotmailreader.app.R
 import com.hotmailreader.app.data.MailPollUpdate
 import com.hotmailreader.app.data.MailboxRepository
-import com.hotmailreader.app.network.Smail1sApiClient
+import com.hotmailreader.app.network.DongvanApiClient
 import com.hotmailreader.app.parser.MailboxParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -263,7 +263,7 @@ class FloatingOverlayService : Service() {
                     txtPreviewService?.text = "${nextService.replaceFirstChar { it.uppercase() }} latest mail"
                     txtPreviewDate?.text = nextDate
                     txtPreviewContent?.text = nextContent.ifEmpty {
-                        "Auto-reading saved mailboxes every 3s for up to 2 hours."
+                        "Auto-reading saved mailboxes every 3s."
                     }
                 }
             }
@@ -276,12 +276,19 @@ class FloatingOverlayService : Service() {
             while (isActive) {
                 if (repository.isAutoReadActive()) {
                     val snapshot = repository.mailboxes.value
-                    snapshot.chunked(15).forEach { batch ->
+                    snapshot.chunked(10).forEach { batch ->
                         if (!isActive || !repository.isAutoReadActive()) return@forEach
-                        val responseMap = Smail1sApiClient.fetchMessagesBatch(batch)
+                        val responseMap = DongvanApiClient.fetchMessagesBatch(batch)
                         val updates = batch.mapNotNull { account ->
                             val res = responseMap[account.id] ?: return@mapNotNull null
-                            if (!res.status) return@mapNotNull null
+                            if (!res.status) {
+                                val err = res.error ?: res.content
+                                return@mapNotNull if (!err.isNullOrBlank()) {
+                                    MailPollUpdate(id = account.id, error = err)
+                                } else {
+                                    null
+                                }
+                            }
                             val code = MailboxParser.extractOtpCode(res.code, res.content)
                             val isNew = MailboxParser.hasNewMailCode(
                                 prev = account,

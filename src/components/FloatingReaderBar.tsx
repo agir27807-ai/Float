@@ -66,8 +66,16 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
     };
     syncBounds();
     window.addEventListener('resize', syncBounds);
-    return () => window.removeEventListener('resize', syncBounds);
-  }, [position, expanded, visible, onPositionChange]);
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && barRef.current) {
+      observer = new ResizeObserver(syncBounds);
+      observer.observe(barRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', syncBounds);
+      observer?.disconnect();
+    };
+  }, [position, expanded, visible, activeMailbox?.email, activeMailbox?.lastCode, onPositionChange]);
 
   const handleDragStart = (e: React.PointerEvent<HTMLElement>) => {
     e.preventDefault();
@@ -116,6 +124,7 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
   const hasOtp = Boolean(otpCode && otpCode !== '----');
   const isOtpCopied = hasOtp && copiedValue === `otp:${otpCode}`;
   const isEmailCopied = Boolean(activeMailbox?.email && copiedValue === `email:${activeMailbox.email}`);
+  const displayError = error || (!hasOtp && !activeMailbox?.lastContent ? activeMailbox?.lastError || null : null);
   const openDrawerAbove = position.y > viewportHeight * 0.55;
 
   return (
@@ -211,9 +220,9 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
           data-testid="floating-mail-drawer"
           className="p-3 rounded-2xl bg-[#1d1b19]/95 backdrop-blur-xl text-white border border-white/15 shadow-[0_14px_38px_rgba(0,0,0,0.4)] w-full max-w-[420px]"
         >
-          {error ? (
+          {displayError ? (
             <div className="text-xs text-rose-300 bg-rose-500/15 border border-rose-500/30 rounded-xl px-3 py-2">
-              {error}
+              {displayError}
             </div>
           ) : activeMailbox?.lastContent ? (
             <div className="space-y-2">

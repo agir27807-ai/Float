@@ -42,7 +42,7 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
   const [refreshToken, setRefreshToken] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
-  const [connectionMode, setConnectionMode] = useState<MailConnectionMode>('oauth');
+  const [connectionMode, setConnectionMode] = useState<MailConnectionMode>('auto');
   const [serviceType, setServiceType] = useState<MailServiceType>('facebook');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [savedFeedback, setSavedFeedback] = useState<string | null>(null);
@@ -60,7 +60,7 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
     setSavedFeedback(null);
 
     if (mode === 'combo') {
-      const parsed = parseMailboxInput(comboText, connectionMode);
+      const parsed = parseMailboxInput(comboText);
       if (!parsed.ok) {
         setValidationError(parsed.error);
         return;
@@ -79,12 +79,12 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
     if (mode === 'bulk') {
       if (!bulkText.trim()) {
         setValidationError(
-          'Paste one or more Hotmail lines (email|password|refresh_token|client_id or email|refresh_token|client_id|client_secret) in Bulk Mode.'
+          'Paste one or more Hotmail lines (email|password|refresh_token|client_id or email|refresh_token|client_id) in Bulk Mode.'
         );
         return;
       }
 
-      const result = parseBulkMailboxInput(bulkText, connectionMode);
+      const result = parseBulkMailboxInput(bulkText);
       if (result.valid.length === 0) {
         const firstErr = result.errors[0];
         setValidationError(
@@ -124,7 +124,6 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
       refresh_token: refreshToken,
       client_id: clientId,
       client_secret: clientSecret,
-      connectionMode,
     });
     if (!validated.ok) {
       setValidationError(validated.error);
@@ -148,23 +147,12 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
     setValidationError(null);
     setSavedFeedback(null);
     const sampleLine1 =
-      connectionMode === 'graph'
-        ? 'demo.fb@hotmail.com|DEMO_REFRESH_TOKEN_FB_001|5464fghj-bnmm-jh56-56fh-454345sdff|demo_client_secret'
-        : connectionMode === 'roundcube'
-          ? 'demo.fb@wmhotmail.com|DemoPass99'
-          : 'demo.fb@hotmail.com|DemoPass99|DEMO_REFRESH_TOKEN_FB_001|5464fghj-bnmm-jh56-56fh-454345sdff';
-    const sampleBulk =
-      connectionMode === 'graph'
-        ? [
-            sampleLine1,
-            'demo.fb2@hotmail.com|DEMO_REFRESH_TOKEN_FB_002|5464fghj-bnmm-jh56-56fh-454345sdff|demo_secret_2',
-            'demo.fb3@outlook.com|DEMO_REFRESH_TOKEN_FB_003|5464fghj-bnmm-jh56-56fh-454345sdff',
-          ].join('\n')
-        : [
-            sampleLine1,
-            'demo.fb2@hotmail.com|DemoPass88|DEMO_REFRESH_TOKEN_FB_002|5464fghj-bnmm-jh56-56fh-454345sdff',
-            'demo.fb3@outlook.com|DEMO_REFRESH_TOKEN_FB_003|5464fghj-bnmm-jh56-56fh-454345sdff',
-          ].join('\n');
+      'demo.fb@hotmail.com|DemoPass99|DEMO_REFRESH_TOKEN_FB_001|5464fghj-bnmm-jh56-56fh-454345sdff';
+    const sampleBulk = [
+      sampleLine1,
+      'demo.fb2@hotmail.com|DemoPass88|DEMO_REFRESH_TOKEN_FB_002|5464fghj-bnmm-jh56-56fh-454345sdff',
+      'demo.fb3@outlook.com|DEMO_REFRESH_TOKEN_FB_003|5464fghj-bnmm-jh56-56fh-454345sdff',
+    ].join('\n');
 
     if (mode === 'combo') {
       setComboText(sampleLine1);
@@ -173,9 +161,9 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
     } else {
       setEmail('demo.fb@hotmail.com');
       setPassword('DemoPass99');
-      setRefreshToken(connectionMode === 'roundcube' ? '' : 'DEMO_REFRESH_TOKEN_FB_001');
-      setClientId(connectionMode === 'roundcube' ? '' : '5464fghj-bnmm-jh56-56fh-454345sdff');
-      setClientSecret(connectionMode === 'graph' ? 'demo_client_secret' : '');
+      setRefreshToken('DEMO_REFRESH_TOKEN_FB_001');
+      setClientId('5464fghj-bnmm-jh56-56fh-454345sdff');
+      setClientSecret('');
     }
   };
 
@@ -245,11 +233,7 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
         {mode === 'combo' ? (
           <div>
             <label htmlFor="mailbox-combo-input" className="block text-xs font-semibold text-slate-700 mb-1.5">
-              {connectionMode === 'graph'
-                ? 'Mail Box Input (email|refresh_token|client_id|client_secret)'
-                : connectionMode === 'roundcube'
-                  ? 'Mail Box Input (email|password)'
-                  : 'Mail Box Input (email|password|refresh_token|client_id)'}
+              Mail Box Input (email|password|refresh_token|client_id or email|refresh_token|client_id)
             </label>
             <textarea
               id="mailbox-combo-input"
@@ -260,13 +244,7 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
                 setComboText(e.target.value);
                 if (validationError) setValidationError(null);
               }}
-              placeholder={
-                connectionMode === 'graph'
-                  ? 'user@outlook.com|M.C518_BAY.0.U.-...|5464fghj-bnmm-jh56-56fh-454345sdff|client_secret'
-                  : connectionMode === 'roundcube'
-                    ? 'user@wmhotmail.com|password'
-                    : 'dsfsd45t4dfg@hotmail.com|M.C518_BAY.0.U.-CtLyFkvpx3K...|5464fghj-bnmm-jh56-56fh-454345sdff'
-              }
+              placeholder="dsfsd45t4dfg@hotmail.com|M.C518_BAY.0.U.-CtLyFkvpx3K...|5464fghj-bnmm-jh56-56fh-454345sdff"
               className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs sm:text-sm font-mono text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15 resize-y"
             />
           </div>
@@ -347,7 +325,7 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
               </div>
               <div>
                 <label htmlFor="mailbox-password" className="block text-xs font-semibold text-slate-700 mb-1">
-                  {connectionMode === 'roundcube' ? 'Password' : 'Password (Optional)'}
+                  Password (Optional)
                 </label>
                 <input
                   id="mailbox-password"
@@ -359,22 +337,6 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
                 />
               </div>
             </div>
-
-            {connectionMode === 'graph' && (
-              <div>
-                <label htmlFor="mailbox-client-secret" className="block text-xs font-semibold text-slate-700 mb-1">
-                  Client Secret (Optional for Graph)
-                </label>
-                <input
-                  id="mailbox-client-secret"
-                  type="text"
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                  placeholder="Optional Azure AD client_secret"
-                  className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50/70 px-3 text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
-                />
-              </div>
-            )}
           </div>
         )}
 
@@ -388,11 +350,11 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
                 id="mailbox-connection-mode"
                 value={connectionMode}
                 onChange={(e) => setConnectionMode(e.target.value as MailConnectionMode)}
-                className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 capitalize focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
+                className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-600/15"
               >
                 {MAIL_CONNECTION_MODES.map((m) => (
                   <option key={m} value={m}>
-                    {m}
+                    {m === 'auto' ? 'Auto (Both APIs)' : m === 'graph' ? 'Graph API' : 'OAuth2 API'}
                   </option>
                 ))}
               </select>

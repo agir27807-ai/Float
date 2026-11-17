@@ -4,14 +4,18 @@ import { FloatingReaderBar } from './components/FloatingReaderBar';
 import { LatestMailCard } from './components/LatestMailCard';
 import { MailboxForm, type SaveMailboxPayload } from './components/MailboxForm';
 import { SavedMailboxesList } from './components/SavedMailboxesList';
-import type { FloatingPosition, MailboxAccount, MailReadResponse, MailServiceType } from './types/mail';
+import type {
+  FloatingPosition,
+  MailboxAccount,
+  MailConnectionMode,
+  MailReadResponse,
+  MailServiceType,
+} from './types/mail';
 import { copyTextToClipboard } from './utils/clipboard';
 import {
   AUTO_POLL_INTERVAL_MS,
-  TWO_HOURS_MS,
   clampFloatingPosition,
   extractOtpCode,
-  formatRemainingTime,
   hasNewMailCode,
   isAutoReadActive,
 } from './utils/mailParser';
@@ -19,7 +23,6 @@ import {
 const STORAGE_MAILBOXES_KEY = 'hotmail_reader_mailboxes_v1';
 const STORAGE_ACTIVE_ID_KEY = 'hotmail_reader_active_id_v1';
 const STORAGE_FLOAT_POS_KEY = 'hotmail_reader_float_pos_v1';
-const STORAGE_AUTOREAD_START_KEY = 'hotmail_reader_autoread_start_v1';
 
 function getInitialFloatingPosition(): FloatingPosition {
   if (typeof window === 'undefined') return { x: 24, y: 84 };
@@ -56,19 +59,6 @@ function loadStoredMailboxes(): MailboxAccount[] {
   }
 }
 
-function loadAutoReadStartedAt(hasMailboxes: boolean): number | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_AUTOREAD_START_KEY);
-    if (raw) {
-      const num = Number(raw);
-      if (Number.isFinite(num) && num > 0) return num;
-    }
-  } catch {
-    // Ignore invalid storage
-  }
-  return hasMailboxes ? Date.now() : null;
-}
-
 export default function App() {
   const [mailboxes, setMailboxes] = useState<MailboxAccount[]>(loadStoredMailboxes);
   const [activeId, setActiveId] = useState<string | null>(() => {
@@ -81,12 +71,7 @@ export default function App() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
-
   const [autoReadEnabled, setAutoReadEnabled] = useState(true);
-  const [autoReadStartedAt, setAutoReadStartedAt] = useState<number | null>(() =>
-    loadAutoReadStartedAt(loadStoredMailboxes().length > 0)
-  );
-  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const comboInputRef = useRef<HTMLTextAreaElement | null>(null);
   const copyTimerRef = useRef<number | null>(null);
@@ -103,17 +88,7 @@ export default function App() {
     return mailboxes.find((m) => m.id === activeId) ?? mailboxes[0];
   }, [mailboxes, activeId]);
 
-  const autoReading = isAutoReadActive(
-    autoReadStartedAt,
-    nowMs,
-    autoReadEnabled,
-    mailboxes.length
-  );
-  const autoReadExpired =
-    mailboxes.length > 0 &&
-    autoReadStartedAt !== null &&
-    nowMs - autoReadStartedAt >= TWO_HOURS_MS;
-  const remainingTimeLabel = formatRemainingTime(autoReadStartedAt, nowMs);
+  const autoReading = isAutoReadActive(autoReadEnabled, mailboxes.length);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_MAILBOXES_KEY, JSON.stringify(mailboxes));
@@ -133,14 +108,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_FLOAT_POS_KEY, JSON.stringify(floatingPos));
   }, [floatingPos]);
-
-  useEffect(() => {
-    if (autoReadStartedAt !== null) {
-      localStorage.setItem(STORAGE_AUTOREAD_START_KEY, String(autoReadStartedAt));
-    } else {
-      localStorage.removeItem(STORAGE_AUTOREAD_START_KEY);
-    }
-  }, [autoReadStartedAt]);
 
   const triggerCopyFeedback = useCallback(async (key: string, text: string) => {
     const ok = await copyTextToClipboard(text);
@@ -177,14 +144,30 @@ export default function App() {
           refresh_token: target.refresh_token,
           client_id: target.client_id,
           client_secret: target.client_secret,
-          mode: target.connectionMode ?? 'oauth',
+          mode: target.connectionMode ?? 'auto',
           type: target.serviceType,
         }),
       });
 
       const data = (await res.json()) as MailReadResponse;
       if (!res.ok || data.status === false) {
-        return data.error || data.message || 'No matching verification mail found yet.';
+        const errMsg =
+          data.error ||
+          data.message ||
+          data.content ||
+          'No matching verification mail found yet.';
+        setMailboxes((prev) =>
+          prev.map((m) =>
+            m.id === target.id
+              ? {
+                  ...m,
+                  lastError: errMsg,
+                  lastFetchedAt: Date.now(),
+                }
+              : m
+          )
+        );
+        return errMsg;
       }
 
       const extractedCode = extractOtpCode(data.code, data.content);
@@ -209,6 +192,7 @@ export default function App() {
                   (extractedCode ? `${extractedCode} confirmation code` : m.lastContent),
                 lastDate: data.date || m.lastDate,
                 lastUid: data.uid || m.lastUid,
+                lastError: undefined,
                 lastFetchedAt: Date.now(),
                 lastCodeReceivedAt: receivedAt,
               }
@@ -252,42 +236,25 @@ export default function App() {
     }
   }, [readSingleAccount]);
 
-  // 2-hour countdown clock & 3-second auto-read loop
+  // Continuous always-on 3-second auto-read loop
   useEffect(() => {
-    if (mailboxes.length === 0 || !autoReadEnabled || autoReadStartedAt === null) {
+    if (mailboxes.length === 0 || !autoReadEnabled) {
       return;
     }
 
-    const clockId = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-
-    if (Date.now() - autoReadStartedAt >= TWO_HOURS_MS) {
-      return () => window.clearInterval(clockId);
-    }
-
     const pollId = window.setInterval(() => {
-      const now = Date.now();
-      setNowMs(now);
-      if (now - autoReadStartedAt >= TWO_HOURS_MS) {
-        window.clearInterval(pollId);
-        return;
-      }
       void pollAllMailboxesOnce();
     }, AUTO_POLL_INTERVAL_MS);
 
     return () => {
-      window.clearInterval(clockId);
       window.clearInterval(pollId);
     };
-  }, [mailboxes.length, autoReadEnabled, autoReadStartedAt, pollAllMailboxesOnce]);
+  }, [mailboxes.length, autoReadEnabled, pollAllMailboxesOnce]);
 
   const handleSaveMailbox = useCallback(
     (data: SaveMailboxPayload) => {
       setApiError(null);
       const now = Date.now();
-      setAutoReadStartedAt(now);
-      setNowMs(now);
       setAutoReadEnabled(true);
 
       const existing = mailboxesRef.current.find(
@@ -328,8 +295,6 @@ export default function App() {
       if (items.length === 0) return;
       setApiError(null);
       const now = Date.now();
-      setAutoReadStartedAt(now);
-      setNowMs(now);
       setAutoReadEnabled(true);
 
       let firstCreatedOrUpdatedId: string | null = null;
@@ -416,22 +381,58 @@ export default function App() {
     setAutoReadEnabled((prev) => !prev);
   }, []);
 
-  const handleRestartAutoRead = useCallback(() => {
-    const now = Date.now();
-    setAutoReadStartedAt(now);
-    setNowMs(now);
-    setAutoReadEnabled(true);
-    void pollAllMailboxesOnce();
-  }, [pollAllMailboxesOnce]);
+  const handleChangeConnectionMode = useCallback(
+    (connectionMode: MailConnectionMode) => {
+      if (!activeMailbox) return;
+      const updatedTarget: MailboxAccount = {
+        ...activeMailbox,
+        connectionMode,
+        lastError: undefined,
+      };
+      setMailboxes((prev) =>
+        prev.map((m) => (m.id === activeMailbox.id ? updatedTarget : m))
+      );
+      setApiError(null);
+      setLoadingId(updatedTarget.id);
+      void readSingleAccount(updatedTarget, true)
+        .then((errMsg) => {
+          if (errMsg) setApiError(errMsg);
+        })
+        .catch((err) => {
+          setApiError(err instanceof Error ? err.message : 'Network error reading Hotmail API.');
+        })
+        .finally(() => {
+          setLoadingId(null);
+        });
+    },
+    [activeMailbox, readSingleAccount]
+  );
 
   const handleChangeServiceType = useCallback(
     (serviceType: MailServiceType) => {
       if (!activeMailbox) return;
+      const updatedTarget: MailboxAccount = {
+        ...activeMailbox,
+        serviceType,
+        lastError: undefined,
+      };
       setMailboxes((prev) =>
-        prev.map((m) => (m.id === activeMailbox.id ? { ...m, serviceType } : m))
+        prev.map((m) => (m.id === activeMailbox.id ? updatedTarget : m))
       );
+      setApiError(null);
+      setLoadingId(updatedTarget.id);
+      void readSingleAccount(updatedTarget, true)
+        .then((errMsg) => {
+          if (errMsg) setApiError(errMsg);
+        })
+        .catch((err) => {
+          setApiError(err instanceof Error ? err.message : 'Network error reading Hotmail API.');
+        })
+        .finally(() => {
+          setLoadingId(null);
+        });
     },
-    [activeMailbox]
+    [activeMailbox, readSingleAccount]
   );
 
   const handleDeleteMailbox = useCallback(
@@ -448,7 +449,6 @@ export default function App() {
     setMailboxes([]);
     setActiveId(null);
     setApiError(null);
-    setAutoReadStartedAt(null);
   }, []);
 
   return (
@@ -521,10 +521,10 @@ export default function App() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-24">
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 text-balance">
-            Floating Hotmail OAuth2 Reader
+            Floating Hotmail OAuth2 &amp; Graph Reader
           </h1>
           <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-            Save single or bulk Hotmail OAuth2 accounts in the Mail Box. Saved accounts auto-read every 3 seconds for 2 hours, and the floating bar automatically displays whichever mailbox receives the latest code.
+            Save single or bulk Hotmail OAuth2 or Graph API accounts in the Mail Box. Saved accounts auto-read continuously every 3 seconds, and the floating bar automatically displays whichever mailbox receives the latest code.
           </p>
         </div>
 
@@ -544,8 +544,6 @@ export default function App() {
               loadingId={loadingId}
               bulkLoading={bulkLoading}
               autoReading={autoReading}
-              autoReadExpired={autoReadExpired}
-              remainingTimeLabel={remainingTimeLabel}
               copiedValue={copiedValue}
               onSelect={(id) => {
                 setActiveId(id);
@@ -554,7 +552,6 @@ export default function App() {
               onRefresh={(id) => void fetchLatestForMailbox(id)}
               onReadAll={() => void handleRefreshAllMailboxes()}
               onToggleAutoRead={handleToggleAutoRead}
-              onRestartAutoRead={handleRestartAutoRead}
               onDelete={handleDeleteMailbox}
               onClearAll={handleClearAllMailboxes}
               onCopyOtp={handleCopyOtp}
@@ -568,6 +565,7 @@ export default function App() {
               loading={Boolean(activeMailbox && loadingId === activeMailbox.id)}
               error={apiError}
               copiedValue={copiedValue}
+              onChangeConnectionMode={handleChangeConnectionMode}
               onChangeServiceType={handleChangeServiceType}
               onRefresh={() => void fetchLatestForMailbox()}
               onCopyOtp={handleCopyOtp}
@@ -579,17 +577,20 @@ export default function App() {
               className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6"
             >
               <h2 id="api-reference-heading" className="text-base font-bold text-slate-900">
-                smail1s API Connection (OAuth2 / Graph / Roundcube)
+                DongvanFB API Connection (OAuth2 &amp; Graph API)
               </h2>
               <p className="text-xs text-slate-600 mt-1">
-                Requests are proxied server-side to <code className="font-mono text-slate-800">smail1s.com/get_messages</code> every 3 seconds for up to 2 hours.
+                Requests are proxied server-side every 3 seconds to <code className="font-mono text-slate-800">get_code_oauth2</code> or <code className="font-mono text-slate-800">graph_code</code>.
               </p>
 
               <div className="mt-3 p-3.5 rounded-xl bg-slate-950 text-slate-200 font-mono text-xs overflow-x-auto leading-relaxed">
-                <pre>{`POST /api/get-code -> https://smail1s.com/get_messages
+                <pre>{`POST https://tools.dongvanfb.net/api/get_code_oauth2
+POST https://tools.dongvanfb.net/api/graph_code
 {
-  "mode": "oauth" | "graph" | "roundcube",
-  "data": "user@outlook.com|refresh_token|client_id|client_secret"
+  "email": "<EMAIL>",
+  "refresh_token": "<REFRESH_TOKEN>",
+  "client_id": "<CLIENT_ID>",
+  "type": "facebook"
 }`}</pre>
               </div>
             </section>

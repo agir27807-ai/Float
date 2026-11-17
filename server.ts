@@ -5,19 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import {
-  extractOtpCode,
-  pickBestSmail1sMessage,
-  stripHtmlMessage,
-  type Smail1sRawMessage,
-} from './src/utils/mailParser.ts';
+import { extractOtpCode } from './src/utils/mailParser.ts';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const SMAIL1S_ENDPOINT = 'https://smail1s.com/get_messages';
+const DONGVAN_OAUTH_ENDPOINT = 'https://tools.dongvanfb.net/api/get_code_oauth2';
+const DONGVAN_GRAPH_ENDPOINT = 'https://tools.dongvanfb.net/api/graph_code';
 
 const SAMPLE_CODES_BY_TYPE: Record<string, { code: string; content: string }> = {
   facebook: {
@@ -120,33 +116,20 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
   app.post('/api/get-code', async (req, res) => {
     const body = req.body as {
       email?: string;
-      password?: string;
       refresh_token?: string;
       client_id?: string;
-      client_secret?: string;
       mode?: string;
       type?: string;
     };
 
     const email = typeof body?.email === 'string' ? body.email.trim() : '';
-    const password = typeof body?.password === 'string' ? body.password.trim() : '';
     const refresh_token = typeof body?.refresh_token === 'string' ? body.refresh_token.trim() : '';
     const client_id = typeof body?.client_id === 'string' ? body.client_id.trim() : '';
-    const client_secret = typeof body?.client_secret === 'string' ? body.client_secret.trim() : '';
     const mode =
-      body?.mode === 'graph' || body?.mode === 'roundcube' ? body.mode : 'oauth';
+      body?.mode === 'graph' || body?.mode === 'oauth' ? body.mode : 'auto';
     const type = typeof body?.type === 'string' && body.type.trim() ? body.type.trim() : 'facebook';
 
-    if (mode === 'roundcube') {
-      if (!email || !password) {
-        res.status(400).json({
-          status: false,
-          email,
-          error: 'Missing required fields: email and password are required for Roundcube mode.',
-        });
-        return;
-      }
-    } else if (!email || !refresh_token || !client_id) {
+    if (!email || !refresh_token || !client_id) {
       res.status(400).json({
         status: false,
         email,
@@ -183,114 +166,172 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
       return;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    type DongvanResult = {
+      ok: boolean;
+      httpStatus: number;
+      email: string;
+      password?: string;
+      code?: string;
+      content?: string;
+      date?: string;
+      error?: string;
+    };
 
-    const dataLine =
-      mode === 'roundcube'
-        ? `${email}|${password}`
-        : mode === 'graph' && client_secret
-          ? `${email}|${refresh_token}|${client_id}|${client_secret}`
-          : `${email}|${refresh_token}|${client_id}`;
-
-    try {
-      const upstream = await fetch(SMAIL1S_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          mode,
-          data: dataLine,
-        }),
-        signal: controller.signal,
-      });
-
-      const rawText = await upstream.text();
-      let parsed: {
-        data?: Array<{
-          email?: string | null;
-          error?: string | null;
-          mailSource?: string;
-          messages?: Smail1sRawMessage[];
-        }>;
-        error?: string;
-        message?: string;
-      };
-
+    async function callDongvan(endpoint: string): Promise<DongvanResult> {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
       try {
-        parsed = JSON.parse(rawText);
-      } catch {
-        res.status(upstream.ok ? 502 : upstream.status).json({
-          status: false,
-          email,
-          error: rawText || `Upstream API returned HTTP ${upstream.status}`,
+        const upstream = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            email,
+            refresh_token,
+            client_id,
+            type,
+          }),
+          signal: controller.signal,
         });
-        return;
-      }
 
-      const firstEntry =
-        Array.isArray(parsed.data) && parsed.data.length > 0
-          ? (parsed.data.find((entry) => entry.email?.toLowerCase() === email.toLowerCase()) ??
-            parsed.data[0])
-          : undefined;
+        const rawText = await upstream.text();
+        let parsed: {
+          email?: string;
+          password?: string;
+          status?: boolean;
+          code?: string | null;
+          content?: string | null;
+          date?: string | null;
+          error?: string;
+          message?: string;
+        };
 
-      if (!upstream.ok || firstEntry?.error) {
-        res.status(upstream.ok ? 200 : upstream.status).json({
-          status: false,
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          return {
+            ok: false,
+            httpStatus: upstream.ok ? 502 : upstream.status,
+            email,
+            error: rawText || `Upstream API returned HTTP ${upstream.status}`,
+          };
+        }
+
+        const content = (parsed.content ?? '').trim();
+        if (!upstream.ok || parsed.status === false) {
+          return {
+            ok: false,
+            httpStatus: upstream.ok ? 200 : upstream.status,
+            email: parsed.email || email,
+            error:
+              parsed.error ||
+              parsed.message ||
+              content ||
+              `No matching ${type} verification mail found yet.`,
+          };
+        }
+
+        const code = extractOtpCode(parsed.code, content);
+        return {
+          ok: true,
+          httpStatus: 200,
+          email: parsed.email || email,
+          password: parsed.password,
+          code,
+          content,
+          date: (parsed.date ?? '').trim() || undefined,
+        };
+      } catch (err) {
+        const message =
+          err instanceof Error && err.name === 'AbortError'
+            ? 'Request to dongvanfb API timed out after 20 seconds.'
+            : err instanceof Error
+              ? err.message
+              : 'Failed to reach Hotmail OAuth2/Graph API.';
+        return {
+          ok: false,
+          httpStatus: 502,
           email,
-          error:
-            firstEntry?.error ||
-            parsed.error ||
-            parsed.message ||
-            `Upstream API returned HTTP ${upstream.status}`,
-        });
-        return;
+          error: message,
+        };
+      } finally {
+        clearTimeout(timeoutId);
       }
-
-      const messages = Array.isArray(firstEntry?.messages) ? firstEntry.messages : [];
-      const best = pickBestSmail1sMessage(messages, type);
-      if (!best) {
-        res.json({
-          email,
-          status: false,
-          error: `No matching ${type} verification mail found yet.`,
-        });
-        return;
-      }
-
-      const plainBody = stripHtmlMessage(best.message);
-      const subject = (best.subject ?? '').trim();
-      const content = plainBody || subject;
-      const code = extractOtpCode(best.code, `${subject} ${plainBody}`);
-
-      res.json({
-        email: firstEntry?.email || email,
-        status: true,
-        code,
-        content,
-        date: (best.date ?? '').trim() || undefined,
-        uid: (best.uid ?? '').trim() || undefined,
-        from: (best.from ?? '').trim() || undefined,
-        subject: subject || undefined,
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error && err.name === 'AbortError'
-          ? 'Request to smail1s API timed out after 20 seconds.'
-          : err instanceof Error
-            ? err.message
-            : 'Failed to reach Hotmail OAuth2 API.';
-
-      res.status(502).json({
-        status: false,
-        email,
-        error: message,
-      });
-    } finally {
-      clearTimeout(timeoutId);
     }
+
+    if (mode === 'graph') {
+      const r = await callDongvan(DONGVAN_GRAPH_ENDPOINT);
+      if (!r.ok) {
+        res.status(r.httpStatus).json({ status: false, email: r.email, error: r.error });
+        return;
+      }
+      res.json({
+        email: r.email,
+        password: r.password,
+        status: true,
+        code: r.code,
+        content: r.content,
+        date: r.date,
+      });
+      return;
+    }
+
+    if (mode === 'oauth') {
+      const r = await callDongvan(DONGVAN_OAUTH_ENDPOINT);
+      if (!r.ok) {
+        res.status(r.httpStatus).json({ status: false, email: r.email, error: r.error });
+        return;
+      }
+      res.json({
+        email: r.email,
+        password: r.password,
+        status: true,
+        code: r.code,
+        content: r.content,
+        date: r.date,
+      });
+      return;
+    }
+
+    // Auto mode: try OAuth2 first, then automatically fall back to Graph API
+    const oauthRes = await callDongvan(DONGVAN_OAUTH_ENDPOINT);
+    if (oauthRes.ok) {
+      res.json({
+        email: oauthRes.email,
+        password: oauthRes.password,
+        status: true,
+        code: oauthRes.code,
+        content: oauthRes.content,
+        date: oauthRes.date,
+      });
+      return;
+    }
+
+    const graphRes = await callDongvan(DONGVAN_GRAPH_ENDPOINT);
+    if (graphRes.ok) {
+      res.json({
+        email: graphRes.email,
+        password: graphRes.password,
+        status: true,
+        code: graphRes.code,
+        content: graphRes.content,
+        date: graphRes.date,
+      });
+      return;
+    }
+
+    const combinedError =
+      oauthRes.error === graphRes.error
+        ? oauthRes.error
+        : `OAuth2: ${oauthRes.error} | Graph: ${graphRes.error}`;
+
+    res.status(graphRes.httpStatus === 200 ? 200 : graphRes.httpStatus).json({
+      status: false,
+      email,
+      error: combinedError,
+    });
   });
 
   if (process.env.NODE_ENV !== 'production') {

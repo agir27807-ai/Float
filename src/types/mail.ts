@@ -16,7 +16,7 @@ export const MAIL_SERVICE_TYPES = [
 
 export type MailServiceType = (typeof MAIL_SERVICE_TYPES)[number];
 
-export const MAIL_CONNECTION_MODES = ['oauth', 'graph', 'roundcube'] as const;
+export const MAIL_CONNECTION_MODES = ['auto', 'oauth', 'graph'] as const;
 
 export type MailConnectionMode = (typeof MAIL_CONNECTION_MODES)[number];
 
@@ -34,6 +34,7 @@ export interface MailboxAccount {
   lastContent?: string;
   lastDate?: string;
   lastUid?: string;
+  lastError?: string;
   lastFetchedAt?: number;
   lastCodeReceivedAt?: number;
   isDemo?: boolean;

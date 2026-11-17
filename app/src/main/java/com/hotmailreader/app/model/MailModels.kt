@@ -19,11 +19,11 @@ object MailServiceTypes {
 }
 
 object MailConnectionModes {
+    const val AUTO = "auto"
     const val OAUTH = "oauth"
     const val GRAPH = "graph"
-    const val ROUNDCUBE = "roundcube"
 
-    val ALL = listOf(OAUTH, GRAPH, ROUNDCUBE)
+    val ALL = listOf(AUTO, OAUTH, GRAPH)
 }
 
 data class MailboxAccount(
@@ -33,13 +33,14 @@ data class MailboxAccount(
     val refreshToken: String,
     val clientId: String,
     val clientSecret: String? = null,
-    val connectionMode: String = MailConnectionModes.OAUTH,
+    val connectionMode: String = MailConnectionModes.AUTO,
     val serviceType: String = "facebook",
     val createdAt: Long = System.currentTimeMillis(),
     val lastCode: String? = null,
     val lastContent: String? = null,
     val lastDate: String? = null,
     val lastUid: String? = null,
+    val lastError: String? = null,
     val lastFetchedAt: Long? = null,
     val lastCodeReceivedAt: Long? = null
 )

@@ -120,7 +120,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="Auto-reading saved mailboxes every 3s for up to 2 hours."
+            android:text="Auto-reading saved mailboxes every 3s."
             android:textColor="#F4F4F5"
             android:textSize="12sp" />
     </LinearLayout>

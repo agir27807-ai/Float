@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, Copy, Pause, Play, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { Check, Copy, Pause, Play, RefreshCw, Trash2 } from 'lucide-react';
 import type { MailboxAccount } from '../types/mail';
 
 interface SavedMailboxesListProps {
@@ -8,14 +8,11 @@ interface SavedMailboxesListProps {
   loadingId: string | null;
   bulkLoading: boolean;
   autoReading: boolean;
-  autoReadExpired: boolean;
-  remainingTimeLabel: string;
   copiedValue: string | null;
   onSelect: (id: string) => void;
   onRefresh: (id: string) => void;
   onReadAll: () => void;
   onToggleAutoRead: () => void;
-  onRestartAutoRead: () => void;
   onDelete: (id: string) => void;
   onClearAll: () => void;
   onCopyOtp: (code: string) => void;
@@ -27,14 +24,11 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
   loadingId,
   bulkLoading,
   autoReading,
-  autoReadExpired,
-  remainingTimeLabel,
   copiedValue,
   onSelect,
   onRefresh,
   onReadAll,
   onToggleAutoRead,
-  onRestartAutoRead,
   onDelete,
   onClearAll,
   onCopyOtp,
@@ -108,51 +102,34 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
           className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 text-xs"
         >
           <div className="flex items-center gap-1.5 text-slate-600">
-            {autoReadExpired ? (
-              <span className="font-medium text-amber-700">2h auto-read completed</span>
-            ) : autoReading ? (
+            {autoReading ? (
               <>
                 <span className="font-semibold text-emerald-700">Auto-read every 3s</span>
                 <span aria-hidden="true">·</span>
-                <span className="font-mono tabular-nums text-slate-600">{remainingTimeLabel} left</span>
+                <span className="text-slate-600">Always active</span>
               </>
             ) : (
-              <>
-                <span className="font-medium text-slate-700">Auto-read paused</span>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono tabular-nums text-slate-500">{remainingTimeLabel} left</span>
-              </>
+              <span className="font-medium text-slate-700">Auto-read paused</span>
             )}
           </div>
 
-          {autoReadExpired ? (
-            <button
-              type="button"
-              onClick={onRestartAutoRead}
-              className="inline-flex items-center gap-1 px-2.5 h-7 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold whitespace-nowrap transition-colors"
-            >
-              <RotateCcw className="w-3 h-3" aria-hidden="true" />
-              <span>Restart 2h</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onToggleAutoRead}
-              className="inline-flex items-center gap-1 px-2.5 h-7 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold whitespace-nowrap transition-colors"
-            >
-              {autoReading ? (
-                <>
-                  <Pause className="w-3 h-3" aria-hidden="true" />
-                  <span>Pause</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3 h-3" aria-hidden="true" />
-                  <span>Resume</span>
-                </>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onToggleAutoRead}
+            className="inline-flex items-center gap-1 px-2.5 h-7 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold whitespace-nowrap transition-colors"
+          >
+            {autoReading ? (
+              <>
+                <Pause className="w-3 h-3" aria-hidden="true" />
+                <span>Pause</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3" aria-hidden="true" />
+                <span>Resume</span>
+              </>
+            )}
+          </button>
         </div>
       )}
 
@@ -199,7 +176,7 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
                     </div>
                     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500 mt-0.5">
                       <span className="uppercase font-medium text-slate-600 whitespace-nowrap">
-                        {mailbox.connectionMode ?? 'oauth'}
+                        {mailbox.connectionMode ?? 'auto'}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span className="capitalize whitespace-nowrap">{mailbox.serviceType}</span>

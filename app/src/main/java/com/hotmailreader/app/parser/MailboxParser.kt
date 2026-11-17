@@ -1,6 +1,5 @@
 package com.hotmailreader.app.parser
 
-import com.hotmailreader.app.model.MailConnectionModes
 import com.hotmailreader.app.model.MailboxAccount
 import org.json.JSONObject
 
@@ -27,20 +26,11 @@ data class BulkParseResult(
     val errors: List<BulkLineError>
 )
 
-data class Smail1sRawMessage(
-    val uid: String,
-    val from: String,
-    val subject: String,
-    val date: String,
-    val message: String,
-    val code: String
-)
-
 object MailboxParser {
     const val AUTO_POLL_INTERVAL_MS = 3_000L
-    const val TWO_HOURS_MS = 2L * 60L * 60L * 1_000L
 
     private val EMAIL_REGEX = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
+    private val UUID_CLIENT_REGEX = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE)
     private val FB_CODE_REGEX = Regex("\\bFB-(\\d{4,8})\\b", RegexOption.IGNORE_CASE)
     private val DIGIT_CODE_REGEX = Regex("\\b(\\d{4,8})\\b")
     private val STYLE_BLOCK_REGEX = Regex("<style[^>]*>[\\s\\S]*?</style>", RegexOption.IGNORE_CASE)
@@ -59,13 +49,16 @@ object MailboxParser {
             v.startsWith("DEMO_REFRESH_TOKEN")
     }
 
+    private fun looksLikeClientId(value: String): Boolean {
+        return UUID_CLIENT_REGEX.matches(value.trim())
+    }
+
     fun validateFields(
         email: String,
         refreshToken: String,
         clientId: String,
         password: String? = null,
-        clientSecret: String? = null,
-        connectionMode: String = MailConnectionModes.OAUTH
+        clientSecret: String? = null
     ): SingleParseResult {
         val cleanEmail = email.trim()
         val cleanToken = refreshToken.trim()
@@ -79,22 +72,6 @@ object MailboxParser {
         if (!isValidEmail(cleanEmail)) {
             return SingleParseResult.Error("Email address format looks invalid.")
         }
-
-        if (connectionMode == MailConnectionModes.ROUNDCUBE) {
-            if (cleanPassword == null) {
-                return SingleParseResult.Error("Password is required for Roundcube mode (email|password).")
-            }
-            return SingleParseResult.Success(
-                ParsedMailbox(
-                    email = cleanEmail,
-                    password = cleanPassword,
-                    refreshToken = cleanToken,
-                    clientId = cleanClientId,
-                    clientSecret = cleanSecret
-                )
-            )
-        }
-
         if (cleanToken.isEmpty()) {
             return SingleParseResult.Error("Refresh token is required for OAuth2 / Graph mail reading.")
         }
@@ -113,18 +90,11 @@ object MailboxParser {
         )
     }
 
-    fun parseSingle(
-        raw: String,
-        connectionMode: String = MailConnectionModes.OAUTH
-    ): SingleParseResult {
+    fun parseSingle(raw: String): SingleParseResult {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) {
             return SingleParseResult.Error(
-                if (connectionMode == MailConnectionModes.ROUNDCUBE) {
-                    "Paste credentials: email|password"
-                } else {
-                    "Paste credentials: email|password|refresh_token|client_id or email|refresh_token|client_id|client_secret"
-                }
+                "Paste credentials: email|password|refresh_token|client_id or email|refresh_token|client_id"
             )
         }
 
@@ -136,8 +106,7 @@ object MailboxParser {
                     refreshToken = obj.optString("refresh_token", ""),
                     clientId = obj.optString("client_id", ""),
                     password = obj.optString("password", ""),
-                    clientSecret = obj.optString("client_secret", ""),
-                    connectionMode = connectionMode
+                    clientSecret = obj.optString("client_secret", "")
                 )
             } catch (_: Exception) {
                 SingleParseResult.Error("Invalid JSON format in Mail Box.")
@@ -145,7 +114,7 @@ object MailboxParser {
         }
 
         val firstLine = trimmed.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-        val parts = when {
+        val rawParts = when {
             firstLine.contains("|") -> firstLine.split("|").map { it.trim() }
             firstLine.contains("\t") -> firstLine.split("\t").map { it.trim() }
             firstLine.contains(";") -> firstLine.split(";").map { it.trim() }
@@ -153,28 +122,42 @@ object MailboxParser {
             else -> emptyList()
         }
 
-        if (connectionMode == MailConnectionModes.ROUNDCUBE && parts.size == 2) {
-            return validateFields(
-                email = parts[0],
-                refreshToken = "",
-                clientId = "",
-                password = parts[1],
-                connectionMode = connectionMode
+        val parts = rawParts.toMutableList()
+        while (parts.size > 3 && parts.last().isEmpty()) {
+            parts.removeAt(parts.lastIndex)
+        }
+
+        if (parts.size < 3) {
+            return SingleParseResult.Error(
+                "Use format: email|password|refresh_token|client_id or email|refresh_token|client_id"
             )
+        }
+
+        var tokenIdx = -1
+        for (i in 1 until parts.size) {
+            if (looksLikeRefreshToken(parts[i])) {
+                tokenIdx = i
+                break
+            }
         }
 
         return when {
             parts.size == 4 -> {
-                // Distinguish Graph format (email|refresh_token|client_id|client_secret)
-                // from Combo format (email|password|refresh_token|client_id)
-                if (looksLikeRefreshToken(parts[1]) && !looksLikeRefreshToken(parts[2])) {
+                if (tokenIdx == 1 && !looksLikeRefreshToken(parts[2])) {
                     validateFields(
                         email = parts[0],
                         refreshToken = parts[1],
                         clientId = parts[2],
                         password = null,
-                        clientSecret = parts[3],
-                        connectionMode = connectionMode
+                        clientSecret = parts[3]
+                    )
+                } else if (tokenIdx == 3 && !looksLikeRefreshToken(parts[2])) {
+                    validateFields(
+                        email = parts[0],
+                        refreshToken = parts[3],
+                        clientId = parts[2],
+                        password = parts[1],
+                        clientSecret = null
                     )
                 } else {
                     validateFields(
@@ -182,36 +165,43 @@ object MailboxParser {
                         refreshToken = parts[2],
                         clientId = parts[3],
                         password = parts[1],
-                        clientSecret = null,
-                        connectionMode = connectionMode
+                        clientSecret = null
                     )
                 }
             }
-            parts.size == 3 -> validateFields(parts[0], parts[1], parts[2], null, null, connectionMode)
-            parts.size > 4 -> {
-                val email = parts.first()
-                val clientId = parts.last()
-                val refreshToken = parts[parts.size - 2]
-                val password = parts.subList(1, parts.size - 2).joinToString("|")
-                validateFields(email, refreshToken, clientId, password, null, connectionMode)
+            parts.size == 3 -> {
+                if (looksLikeClientId(parts[1]) && looksLikeRefreshToken(parts[2])) {
+                    validateFields(parts[0], parts[2], parts[1])
+                } else {
+                    validateFields(parts[0], parts[1], parts[2])
+                }
             }
-            else -> SingleParseResult.Error(
-                "Use format: email|password|refresh_token|client_id or email|refresh_token|client_id"
-            )
+            else -> {
+                val email = parts.first()
+                if (tokenIdx in 2 until parts.lastIndex) {
+                    val password = parts.subList(1, tokenIdx).joinToString("|")
+                    validateFields(email, parts[tokenIdx], parts[tokenIdx + 1], password)
+                } else if (tokenIdx == parts.lastIndex && parts.size >= 4) {
+                    val password = parts.subList(1, parts.size - 2).joinToString("|")
+                    validateFields(email, parts[parts.size - 1], parts[parts.size - 2], password)
+                } else {
+                    val clientId = parts.last()
+                    val refreshToken = parts[parts.size - 2]
+                    val password = parts.subList(1, parts.size - 2).joinToString("|")
+                    validateFields(email, refreshToken, clientId, password)
+                }
+            }
         }
     }
 
-    fun parseBulk(
-        raw: String,
-        connectionMode: String = MailConnectionModes.OAUTH
-    ): BulkParseResult {
+    fun parseBulk(raw: String): BulkParseResult {
         val byEmail = LinkedHashMap<String, ParsedMailbox>()
         val errors = mutableListOf<BulkLineError>()
 
         raw.lines().forEachIndexed { index, line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty()) return@forEachIndexed
-            when (val res = parseSingle(trimmed, connectionMode)) {
+            when (val res = parseSingle(trimmed)) {
                 is SingleParseResult.Success -> byEmail[res.mailbox.email.lowercase()] = res.mailbox
                 is SingleParseResult.Error -> errors.add(BulkLineError(index + 1, res.message))
             }
@@ -240,41 +230,6 @@ object MailboxParser {
             .replace("&#39;", "'", ignoreCase = true)
             .replace("&#x27;", "'", ignoreCase = true)
         return WHITESPACE_REGEX.replace(unescaped, " ").trim()
-    }
-
-    fun matchesServiceType(
-        from: String,
-        subject: String,
-        plainBody: String,
-        serviceType: String
-    ): Boolean {
-        val normalized = serviceType.trim().lowercase()
-        if (normalized.isEmpty() || normalized == "all") return true
-        val haystack = "${from.lowercase()} ${subject.lowercase()} ${plainBody.lowercase()}"
-        val keywords = when (normalized) {
-            "facebook" -> listOf("facebook", "facebookmail", "fb-", "meta")
-            "twitter" -> listOf("twitter", "x.com")
-            "google" -> listOf("google", "gmail")
-            else -> listOf(normalized)
-        }
-        return keywords.any { haystack.contains(it) }
-    }
-
-    fun pickBestSmail1sMessage(
-        messages: List<Smail1sRawMessage>,
-        serviceType: String
-    ): Smail1sRawMessage? {
-        if (messages.isEmpty()) return null
-        val sorted = messages.sortedByDescending { it.date.trim() }
-        val matching = sorted.filter { msg ->
-            val plain = stripHtml(msg.message)
-            matchesServiceType(msg.from, msg.subject, plain, serviceType)
-        }
-        if (matching.isEmpty()) return null
-        return matching.firstOrNull { msg ->
-            val plain = stripHtml(msg.message)
-            extractOtpCode(msg.code, "${msg.subject} $plain").isNotEmpty()
-        } ?: matching.first()
     }
 
     fun extractOtpCode(code: String?, content: String?): String {

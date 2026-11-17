@@ -1,7 +1,6 @@
 import {
   MAIL_SERVICE_TYPES,
   type FloatingPosition,
-  type MailConnectionMode,
   type MailServiceType,
 } from '../types/mail';
 
@@ -27,6 +26,8 @@ export function isValidServiceType(value: string): value is MailServiceType {
   return (MAIL_SERVICE_TYPES as readonly string[]).includes(value);
 }
 
+const UUID_CLIENT_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function looksLikeRefreshToken(value: string): boolean {
   const v = value.trim();
   return (
@@ -38,20 +39,22 @@ function looksLikeRefreshToken(value: string): boolean {
   );
 }
 
+function looksLikeClientId(value: string): boolean {
+  return UUID_CLIENT_PATTERN.test(value.trim());
+}
+
 export function validateMailboxFields(input: {
   email: string;
   refresh_token: string;
   client_id: string;
   password?: string;
   client_secret?: string;
-  connectionMode?: MailConnectionMode;
 }): ParseResult {
   const email = input.email.trim();
   const refresh_token = input.refresh_token.trim();
   const client_id = input.client_id.trim();
   const password = input.password?.trim();
   const client_secret = input.client_secret?.trim();
-  const connectionMode = input.connectionMode ?? 'oauth';
 
   if (!email) {
     return { ok: false, error: 'Please enter a Hotmail or Outlook email address.' };
@@ -59,23 +62,6 @@ export function validateMailboxFields(input: {
   if (!isValidEmail(email)) {
     return { ok: false, error: 'Email address format looks invalid.' };
   }
-
-  if (connectionMode === 'roundcube') {
-    if (!password) {
-      return { ok: false, error: 'Password is required for Roundcube mode (email|password).' };
-    }
-    return {
-      ok: true,
-      value: {
-        email,
-        password,
-        refresh_token,
-        client_id,
-        ...(client_secret ? { client_secret } : {}),
-      },
-    };
-  }
-
   if (!refresh_token) {
     return { ok: false, error: 'Refresh token is required for OAuth2 / Graph mail reading.' };
   }
@@ -95,18 +81,13 @@ export function validateMailboxFields(input: {
   };
 }
 
-export function parseMailboxInput(
-  raw: string,
-  connectionMode: MailConnectionMode = 'oauth'
-): ParseResult {
+export function parseMailboxInput(raw: string): ParseResult {
   const trimmed = raw.trim();
   if (!trimmed) {
     return {
       ok: false,
       error:
-        connectionMode === 'roundcube'
-          ? 'Paste your credentials (email|password) or enter fields manually.'
-          : 'Paste your mailbox credentials (email|password|refresh_token|client_id or email|refresh_token|client_id|client_secret).',
+        'Paste your mailbox credentials (email|password|refresh_token|client_id or email|refresh_token|client_id).',
     };
   }
 
@@ -119,7 +100,6 @@ export function parseMailboxInput(
         client_id: typeof parsed.client_id === 'string' ? parsed.client_id : '',
         password: typeof parsed.password === 'string' ? parsed.password : undefined,
         client_secret: typeof parsed.client_secret === 'string' ? parsed.client_secret : undefined,
-        connectionMode,
       });
     } catch {
       return { ok: false, error: 'Invalid JSON format in mail box.' };
@@ -139,14 +119,38 @@ export function parseMailboxInput(
     parts = firstLine.split(':').map((p) => p.trim());
   }
 
-  if (connectionMode === 'roundcube' && parts.length === 2) {
-    return validateMailboxFields({
-      email: parts[0] ?? '',
-      password: parts[1] ?? '',
-      refresh_token: '',
-      client_id: '',
-      connectionMode,
-    });
+  // Strip trailing empty segments (e.g. trailing delimiter like "email|pass|tok|cid|")
+  while (parts.length > 3 && parts[parts.length - 1] === '') {
+    parts.pop();
+  }
+
+  if (parts.length >= 3) {
+    const email = parts[0] ?? '';
+    const tokenIdx = parts.findIndex((p, idx) => idx >= 1 && looksLikeRefreshToken(p));
+
+    if (tokenIdx >= 1) {
+      const nextPart = parts[tokenIdx + 1] ?? '';
+      const prevPart = tokenIdx >= 2 ? (parts[tokenIdx - 1] ?? '') : '';
+
+      if (nextPart && (looksLikeClientId(nextPart) || !looksLikeClientId(prevPart))) {
+        const passwordParts = parts.slice(1, tokenIdx).filter(Boolean);
+        return validateMailboxFields({
+          email,
+          password: passwordParts.length > 0 ? passwordParts.join('|') : undefined,
+          refresh_token: parts[tokenIdx] ?? '',
+          client_id: nextPart,
+        });
+      }
+      if (prevPart && looksLikeClientId(prevPart)) {
+        const passwordParts = parts.slice(1, tokenIdx - 1).filter(Boolean);
+        return validateMailboxFields({
+          email,
+          password: passwordParts.length > 0 ? passwordParts.join('|') : undefined,
+          refresh_token: parts[tokenIdx] ?? '',
+          client_id: prevPart,
+        });
+      }
+    }
   }
 
   if (parts.length === 4) {
@@ -157,7 +161,6 @@ export function parseMailboxInput(
         refresh_token: p1 ?? '',
         client_id: p2 ?? '',
         client_secret: p3 ?? '',
-        connectionMode,
       });
     }
     return validateMailboxFields({
@@ -165,13 +168,12 @@ export function parseMailboxInput(
       password: p1 ?? '',
       refresh_token: p2 ?? '',
       client_id: p3 ?? '',
-      connectionMode,
     });
   }
 
   if (parts.length === 3) {
     const [email, refresh_token, client_id] = parts;
-    return validateMailboxFields({ email, refresh_token, client_id, connectionMode });
+    return validateMailboxFields({ email, refresh_token, client_id });
   }
 
   if (parts.length > 4) {
@@ -179,7 +181,7 @@ export function parseMailboxInput(
     const client_id = parts[parts.length - 1] ?? '';
     const refresh_token = parts[parts.length - 2] ?? '';
     const password = parts.slice(1, parts.length - 2).join('|');
-    return validateMailboxFields({ email, password, refresh_token, client_id, connectionMode });
+    return validateMailboxFields({ email, password, refresh_token, client_id });
   }
 
   return {
@@ -198,10 +200,7 @@ export interface BulkParseResult {
   errors: BulkLineError[];
 }
 
-export function parseBulkMailboxInput(
-  raw: string,
-  connectionMode: MailConnectionMode = 'oauth'
-): BulkParseResult {
+export function parseBulkMailboxInput(raw: string): BulkParseResult {
   const lines = raw.split(/\r?\n/);
   const byEmail = new Map<string, ParsedMailbox>();
   const errors: BulkLineError[] = [];
@@ -210,7 +209,7 @@ export function parseBulkMailboxInput(
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    const parsed = parseMailboxInput(trimmed, connectionMode);
+    const parsed = parseMailboxInput(trimmed);
     if (parsed.ok) {
       byEmail.set(parsed.value.email.toLowerCase(), parsed.value);
     } else {
@@ -225,15 +224,6 @@ export function parseBulkMailboxInput(
     valid: Array.from(byEmail.values()),
     errors,
   };
-}
-
-export interface Smail1sRawMessage {
-  uid?: string | null;
-  from?: string | null;
-  subject?: string | null;
-  date?: string | null;
-  message?: string | null;
-  code?: string | null;
 }
 
 export function stripHtmlMessage(raw?: string | null): string {
@@ -272,44 +262,6 @@ export function extractOtpCode(code?: string | null, content?: string | null): s
   return digitMatch?.[1] ?? '';
 }
 
-export function matchesServiceFilter(
-  msg: Smail1sRawMessage,
-  serviceType: string
-): boolean {
-  const normalized = serviceType.trim().toLowerCase();
-  if (!normalized || normalized === 'all') return true;
-  const plainBody = stripHtmlMessage(msg.message);
-  const haystack = `${(msg.from ?? '').toLowerCase()} ${(msg.subject ?? '').toLowerCase()} ${plainBody.toLowerCase()}`;
-  const keywords =
-    normalized === 'facebook'
-      ? ['facebook', 'facebookmail', 'fb-', 'meta']
-      : normalized === 'twitter'
-        ? ['twitter', 'x.com']
-        : normalized === 'google'
-          ? ['google', 'gmail']
-          : [normalized];
-  return keywords.some((kw) => haystack.includes(kw));
-}
-
-export function pickBestSmail1sMessage(
-  messages: ReadonlyArray<Smail1sRawMessage>,
-  serviceType: string
-): Smail1sRawMessage | null {
-  if (!messages || messages.length === 0) return null;
-  const sorted = [...messages].sort((a, b) =>
-    (b.date ?? '').trim().localeCompare((a.date ?? '').trim())
-  );
-  const matching = sorted.filter((msg) => matchesServiceFilter(msg, serviceType));
-  if (matching.length === 0) return null;
-
-  return (
-    matching.find((msg) => {
-      const plain = stripHtmlMessage(msg.message);
-      return Boolean(extractOtpCode(msg.code, `${msg.subject ?? ''} ${plain}`));
-    }) ?? matching[0]
-  );
-}
-
 export function clampFloatingPosition(
   pos: FloatingPosition,
   barSize: { width: number; height: number },
@@ -333,7 +285,6 @@ export function getNextMailboxIndex(currentId: string | null, mailboxes: Readonl
 }
 
 export const AUTO_POLL_INTERVAL_MS = 3000;
-export const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 export function hasNewMailCode(
   prev: { lastCode?: string; lastContent?: string; lastDate?: string; lastUid?: string },
@@ -383,25 +334,6 @@ export function selectLatestIncomingMailboxId(
   return mailboxes[0].id;
 }
 
-export function isAutoReadActive(
-  startedAt: number | null,
-  now: number,
-  enabled: boolean,
-  mailboxCount: number
-): boolean {
-  if (!enabled || mailboxCount <= 0 || startedAt === null) return false;
-  return now - startedAt < TWO_HOURS_MS;
-}
-
-export function formatRemainingTime(startedAt: number | null, now: number): string {
-  if (startedAt === null) return '0m 00s';
-  const remaining = Math.max(0, TWO_HOURS_MS - Math.max(0, now - startedAt));
-  const totalSeconds = Math.floor(remaining / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-  }
-  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+export function isAutoReadActive(enabled: boolean, mailboxCount: number): boolean {
+  return enabled && mailboxCount > 0;
 }

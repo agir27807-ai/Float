@@ -1,6 +1,7 @@
 package com.hotmailreader.app.data
 
 import android.content.Context
+import com.hotmailreader.app.model.MailConnectionModes
 import com.hotmailreader.app.model.MailboxAccount
 import com.hotmailreader.app.parser.MailboxParser
 import com.hotmailreader.app.parser.ParsedMailbox
@@ -19,12 +20,13 @@ import java.util.UUID
 
 data class MailPollUpdate(
     val id: String,
-    val code: String,
-    val content: String?,
-    val date: String?,
+    val code: String = "",
+    val content: String? = null,
+    val date: String? = null,
     val uid: String? = null,
-    val isNewCode: Boolean,
-    val receivedSeq: Long
+    val error: String? = null,
+    val isNewCode: Boolean = false,
+    val receivedSeq: Long = 0L
 )
 
 class MailboxRepository private constructor(context: Context) {
@@ -39,9 +41,6 @@ class MailboxRepository private constructor(context: Context) {
     private val _activeId = MutableStateFlow<String?>(null)
     val activeId: StateFlow<String?> = _activeId.asStateFlow()
 
-    private val _autoReadStartedAt = MutableStateFlow<Long?>(null)
-    val autoReadStartedAt: StateFlow<Long?> = _autoReadStartedAt.asStateFlow()
-
     private val _autoReadEnabled = MutableStateFlow(true)
     val autoReadEnabled: StateFlow<Boolean> = _autoReadEnabled.asStateFlow()
 
@@ -52,16 +51,13 @@ class MailboxRepository private constructor(context: Context) {
         val loaded = loadMailboxesFromPrefs()
         _mailboxes.value = loaded
         _activeId.value = prefs.getString(KEY_ACTIVE_ID, null) ?: loaded.firstOrNull()?.id
-        val savedStart = prefs.getLong(KEY_AUTOREAD_START, -1L)
-        _autoReadStartedAt.value =
-            if (savedStart > 0L) savedStart else if (loaded.isNotEmpty()) System.currentTimeMillis() else null
         _autoReadEnabled.value = prefs.getBoolean(KEY_AUTOREAD_ENABLED, true)
     }
 
     fun saveMailboxes(
         items: List<ParsedMailbox>,
         serviceType: String,
-        connectionMode: String = "oauth"
+        connectionMode: String = MailConnectionModes.AUTO
     ) {
         if (items.isEmpty()) return
         synchronized(lock) {
@@ -112,7 +108,6 @@ class MailboxRepository private constructor(context: Context) {
             if (newestId != null) {
                 _activeId.value = newestId
             }
-            _autoReadStartedAt.value = now
             _autoReadEnabled.value = true
             schedulePersist(immediate = true)
         }
@@ -153,35 +148,49 @@ class MailboxRepository private constructor(context: Context) {
 
             val nextList = _mailboxes.value.map { account ->
                 val upd = updateMap[account.id] ?: return@map account
-                val nextCode = upd.code.ifEmpty { account.lastCode }
-                val nextContent = upd.content?.takeIf { it.isNotBlank() }
-                    ?: if (upd.code.isNotEmpty()) "${upd.code} confirmation code" else account.lastContent
-                val nextDate = upd.date?.takeIf { it.isNotBlank() } ?: account.lastDate
-                val nextUid = upd.uid?.takeIf { it.isNotBlank() } ?: account.lastUid
-                val nextSeq = if (upd.isNewCode) upd.receivedSeq else account.lastCodeReceivedAt
-
-                if (upd.isNewCode && upd.code.isNotEmpty() && upd.receivedSeq >= newestSeq) {
-                    newestSeq = upd.receivedSeq
-                    newestActiveId = account.id
-                }
-
-                if (nextCode != account.lastCode ||
-                    nextContent != account.lastContent ||
-                    nextDate != account.lastDate ||
-                    nextUid != account.lastUid ||
-                    nextSeq != account.lastCodeReceivedAt
-                ) {
-                    listChanged = true
-                    account.copy(
-                        lastCode = nextCode,
-                        lastContent = nextContent,
-                        lastDate = nextDate,
-                        lastUid = nextUid,
-                        lastFetchedAt = now,
-                        lastCodeReceivedAt = nextSeq
-                    )
+                if (upd.error != null) {
+                    if (upd.error != account.lastError) {
+                        listChanged = true
+                        account.copy(
+                            lastError = upd.error,
+                            lastFetchedAt = now
+                        )
+                    } else {
+                        account
+                    }
                 } else {
-                    account
+                    val nextCode = upd.code.ifEmpty { account.lastCode }
+                    val nextContent = upd.content?.takeIf { it.isNotBlank() }
+                        ?: if (upd.code.isNotEmpty()) "${upd.code} confirmation code" else account.lastContent
+                    val nextDate = upd.date?.takeIf { it.isNotBlank() } ?: account.lastDate
+                    val nextUid = upd.uid?.takeIf { it.isNotBlank() } ?: account.lastUid
+                    val nextSeq = if (upd.isNewCode) upd.receivedSeq else account.lastCodeReceivedAt
+
+                    if (upd.isNewCode && upd.code.isNotEmpty() && upd.receivedSeq >= newestSeq) {
+                        newestSeq = upd.receivedSeq
+                        newestActiveId = account.id
+                    }
+
+                    if (nextCode != account.lastCode ||
+                        nextContent != account.lastContent ||
+                        nextDate != account.lastDate ||
+                        nextUid != account.lastUid ||
+                        nextSeq != account.lastCodeReceivedAt ||
+                        account.lastError != null
+                    ) {
+                        listChanged = true
+                        account.copy(
+                            lastCode = nextCode,
+                            lastContent = nextContent,
+                            lastDate = nextDate,
+                            lastUid = nextUid,
+                            lastError = null,
+                            lastFetchedAt = now,
+                            lastCodeReceivedAt = nextSeq
+                        )
+                    } else {
+                        account
+                    }
                 }
             }
 
@@ -225,7 +234,6 @@ class MailboxRepository private constructor(context: Context) {
         synchronized(lock) {
             _mailboxes.value = emptyList()
             _activeId.value = null
-            _autoReadStartedAt.value = null
             schedulePersist(immediate = true)
         }
     }
@@ -237,23 +245,12 @@ class MailboxRepository private constructor(context: Context) {
         }
     }
 
-    fun restartAutoRead() {
-        synchronized(lock) {
-            _autoReadStartedAt.value = System.currentTimeMillis()
-            _autoReadEnabled.value = true
-            schedulePersist(immediate = true)
-        }
-    }
-
     fun setOverlayRunning(running: Boolean) {
         _overlayRunning.value = running
     }
 
-    fun isAutoReadActive(now: Long = System.currentTimeMillis()): Boolean {
-        val start = _autoReadStartedAt.value ?: return false
-        return _autoReadEnabled.value &&
-            _mailboxes.value.isNotEmpty() &&
-            (now - start) < MailboxParser.TWO_HOURS_MS
+    fun isAutoReadActive(): Boolean {
+        return _autoReadEnabled.value && _mailboxes.value.isNotEmpty()
     }
 
     fun getOverlayPosition(): Pair<Int, Int> {
@@ -267,7 +264,6 @@ class MailboxRepository private constructor(context: Context) {
     private fun schedulePersist(immediate: Boolean) {
         val snapshotMailboxes = _mailboxes.value
         val snapshotActiveId = _activeId.value
-        val snapshotStart = _autoReadStartedAt.value
         val snapshotEnabled = _autoReadEnabled.value
 
         persistJob?.cancel()
@@ -278,7 +274,6 @@ class MailboxRepository private constructor(context: Context) {
             writeSnapshotToPrefs(
                 mailboxes = snapshotMailboxes,
                 activeId = snapshotActiveId,
-                autoReadStart = snapshotStart,
                 autoReadEnabled = snapshotEnabled
             )
         }
@@ -287,7 +282,6 @@ class MailboxRepository private constructor(context: Context) {
     private fun writeSnapshotToPrefs(
         mailboxes: List<MailboxAccount>,
         activeId: String?,
-        autoReadStart: Long?,
         autoReadEnabled: Boolean
     ) {
         val arr = JSONArray()
@@ -314,7 +308,6 @@ class MailboxRepository private constructor(context: Context) {
         prefs.edit()
             .putString(KEY_MAILBOXES, arr.toString())
             .putString(KEY_ACTIVE_ID, activeId)
-            .putLong(KEY_AUTOREAD_START, autoReadStart ?: -1L)
             .putBoolean(KEY_AUTOREAD_ENABLED, autoReadEnabled)
             .apply()
     }
@@ -336,7 +329,8 @@ class MailboxRepository private constructor(context: Context) {
                             refreshToken = obj.getString("refreshToken"),
                             clientId = obj.getString("clientId"),
                             clientSecret = obj.optString("clientSecret", "").takeIf { it.isNotEmpty() },
-                            connectionMode = obj.optString("connectionMode", "oauth"),
+                            connectionMode = obj.optString("connectionMode", MailConnectionModes.AUTO)
+                                .ifBlank { MailConnectionModes.AUTO },
                             serviceType = obj.optString("serviceType", "facebook"),
                             createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
                             lastCode = obj.optString("lastCode", "").takeIf { it.isNotEmpty() },
@@ -358,7 +352,6 @@ class MailboxRepository private constructor(context: Context) {
         private const val PREFS_NAME = "hotmail_floating_reader_prefs"
         private const val KEY_MAILBOXES = "mailboxes_json"
         private const val KEY_ACTIVE_ID = "active_id"
-        private const val KEY_AUTOREAD_START = "autoread_start"
         private const val KEY_AUTOREAD_ENABLED = "autoread_enabled"
         private const val KEY_OVERLAY_X = "overlay_x"
         private const val KEY_OVERLAY_Y = "overlay_y"

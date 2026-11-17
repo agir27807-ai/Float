@@ -7,7 +7,7 @@ Native Android application built with **Kotlin**, **Jetpack Compose**, and a `Wi
 - **Click-to-Copy OTP**: Tap the green `OTP: <code>` chip on the floating bar to copy the verification code to Android's clipboard.
 - **Expandable Latest Mail Preview**: Tap the chevron on the floating bar to view the full incoming Facebook email message and timestamp.
 - **Single & Bulk Mail Box**: Paste `email|password|refresh_token|client_id` or `email|refresh_token|client_id` (one per line in **Bulk Mode**).
-- **3-Second Auto-Read for 2 Hours**: Automatically polls `POST https://smail1s.com/get_messages` (`mode: "oauth"`) every 3 seconds for 2 hours and automatically updates the floating bar to whichever mailbox receives the latest code.
+- **Continuous 3-Second Auto-Read**: Automatically polls `POST https://tools.dongvanfb.net/api/get_code_oauth2` (OAuth2) and `POST https://tools.dongvanfb.net/api/graph_code` (Graph API) every 3 seconds continuously and automatically updates the floating bar to whichever mailbox receives the latest code.
 
 ## Build APK in Android Studio or GitHub Actions
 1. Open this repository root folder in **Android Studio** (Ladybug or newer, JDK 17), or push directly to GitHub.

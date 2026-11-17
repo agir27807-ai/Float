@@ -50,7 +50,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,7 +70,7 @@ import com.hotmailreader.app.data.MailboxRepository
 import com.hotmailreader.app.model.MailConnectionModes
 import com.hotmailreader.app.model.MailServiceTypes
 import com.hotmailreader.app.model.MailboxAccount
-import com.hotmailreader.app.network.Smail1sApiClient
+import com.hotmailreader.app.network.DongvanApiClient
 import com.hotmailreader.app.parser.MailboxParser
 import com.hotmailreader.app.parser.SingleParseResult
 import com.hotmailreader.app.service.FloatingOverlayService
@@ -167,34 +166,40 @@ fun HotmailReaderScreen(
     val scope = rememberCoroutineScope()
     val mailboxes by repository.mailboxes.collectAsState()
     val activeId by repository.activeId.collectAsState()
-    val autoReadStartedAt by repository.autoReadStartedAt.collectAsState()
     val autoReadEnabled by repository.autoReadEnabled.collectAsState()
     val overlayRunning by repository.overlayRunning.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Single, 1 = Bulk
     var singleInput by remember { mutableStateOf("") }
     var bulkInput by remember { mutableStateOf("") }
-    var connectionMode by remember { mutableStateOf(MailConnectionModes.OAUTH) }
+    var connectionMode by remember { mutableStateOf(MailConnectionModes.AUTO) }
     var serviceType by remember { mutableStateOf("facebook") }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Auto-read every 3s for up to 2 hours when overlay service is not running
-    LaunchedEffect(overlayRunning, mailboxes.isNotEmpty(), autoReadEnabled, autoReadStartedAt) {
+    // Continuous always-on auto-read every 3s when overlay service is not running
+    LaunchedEffect(overlayRunning, mailboxes.isNotEmpty(), autoReadEnabled) {
         if (overlayRunning || !repository.isAutoReadActive()) return@LaunchedEffect
         var seq = System.currentTimeMillis()
         while (isActive && !overlayRunning && repository.isAutoReadActive()) {
             val snapshot = repository.mailboxes.value
             if (snapshot.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
-                    snapshot.chunked(15).forEach { batch ->
+                    snapshot.chunked(10).forEach { batch ->
                         if (!isActive || !repository.isAutoReadActive()) return@forEach
-                        val responseMap = Smail1sApiClient.fetchMessagesBatch(batch)
+                        val responseMap = DongvanApiClient.fetchMessagesBatch(batch)
                         val updates = batch.mapNotNull { account ->
                             val res = responseMap[account.id] ?: return@mapNotNull null
-                            if (!res.status) return@mapNotNull null
+                            if (!res.status) {
+                                val err = res.error ?: res.content
+                                return@mapNotNull if (!err.isNullOrBlank()) {
+                                    MailPollUpdate(id = account.id, error = err)
+                                } else {
+                                    null
+                                }
+                            }
                             val code = MailboxParser.extractOtpCode(res.code, res.content)
                             val isNew = MailboxParser.hasNewMailCode(
                                 prev = account,
@@ -315,15 +320,10 @@ fun HotmailReaderScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         if (selectedTab == 0) {
-                            val singleLabel = when (connectionMode) {
-                                MailConnectionModes.ROUNDCUBE -> "email|password"
-                                MailConnectionModes.GRAPH -> "email|refresh_token|client_id|client_secret"
-                                else -> "email|password|refresh_token|client_id"
-                            }
                             OutlinedTextField(
                                 value = singleInput,
                                 onValueChange = { singleInput = it; errorMessage = null },
-                                label = { Text(singleLabel) },
+                                label = { Text("email|password|refresh_token|client_id") },
                                 textStyle = TextStyle(
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace
@@ -384,9 +384,9 @@ fun HotmailReaderScreen(
                             MailConnectionModes.ALL.forEach { modeOption ->
                                 val selected = connectionMode == modeOption
                                 val labelText = when (modeOption) {
+                                    MailConnectionModes.AUTO -> "Auto"
                                     MailConnectionModes.GRAPH -> "Graph"
-                                    MailConnectionModes.ROUNDCUBE -> "Roundcube"
-                                    else -> "OAuth"
+                                    else -> "OAuth2"
                                 }
                                 OutlinedButton(
                                     onClick = { connectionMode = modeOption; errorMessage = null },
@@ -447,7 +447,7 @@ fun HotmailReaderScreen(
                                     scope.launch {
                                         isSaving = true
                                         val res = withContext(Dispatchers.Default) {
-                                            MailboxParser.parseSingle(singleInput, modeSnapshot)
+                                            MailboxParser.parseSingle(singleInput)
                                         }
                                         when (res) {
                                             is SingleParseResult.Error -> errorMessage = res.message
@@ -486,7 +486,7 @@ fun HotmailReaderScreen(
                                         scope.launch {
                                             isSaving = true
                                             val bulk = withContext(Dispatchers.Default) {
-                                                MailboxParser.parseBulk(rawText, modeSnapshot)
+                                                MailboxParser.parseBulk(rawText)
                                             }
                                             if (bulk.valid.isEmpty()) {
                                                 val first = bulk.errors.firstOrNull()
@@ -564,10 +564,8 @@ fun HotmailReaderScreen(
                 item(key = "autoread_status") {
                     AutoReadStatusCard(
                         mailboxCount = mailboxes.size,
-                        autoReadStartedAt = autoReadStartedAt,
                         autoReadEnabled = autoReadEnabled,
                         onToggleAutoRead = { repository.toggleAutoRead() },
-                        onRestartAutoRead = { repository.restartAutoRead() },
                         onDeleteAll = {
                             repository.clearAll()
                             statusMessage = "Deleted all saved mailboxes"
@@ -598,34 +596,10 @@ fun HotmailReaderScreen(
 @Composable
 private fun AutoReadStatusCard(
     mailboxCount: Int,
-    autoReadStartedAt: Long?,
     autoReadEnabled: Boolean,
     onToggleAutoRead: () -> Unit,
-    onRestartAutoRead: () -> Unit,
     onDeleteAll: () -> Unit
 ) {
-    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-
-    LaunchedEffect(autoReadStartedAt, autoReadEnabled) {
-        if (autoReadStartedAt == null || !autoReadEnabled) return@LaunchedEffect
-        while (true) {
-            nowMs = System.currentTimeMillis()
-            delay(1_000)
-        }
-    }
-
-    val isExpired = autoReadStartedAt != null &&
-        (nowMs - autoReadStartedAt) >= MailboxParser.TWO_HOURS_MS
-    val remainingLabel = remember(autoReadStartedAt, nowMs) {
-        val start = autoReadStartedAt ?: return@remember "0m 00s"
-        val rem = (MailboxParser.TWO_HOURS_MS - (nowMs - start).coerceAtLeast(0L)).coerceAtLeast(0L)
-        val secs = rem / 1000L
-        val h = secs / 3600L
-        val m = (secs % 3600L) / 60L
-        val s = secs % 60L
-        if (h > 0) "${h}h ${m.toString().padStart(2, '0')}m" else "${m}m ${s.toString().padStart(2, '0')}s"
-    }
-
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(16.dp)
@@ -639,10 +613,10 @@ private fun AutoReadStatusCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = when {
-                        isExpired -> "2h auto-read completed"
-                        autoReadEnabled -> "Auto-read every 3s · $remainingLabel left"
-                        else -> "Auto-read paused · $remainingLabel left"
+                    text = if (autoReadEnabled) {
+                        "Auto-read every 3s · Always active"
+                    } else {
+                        "Auto-read paused"
                     },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -656,12 +630,8 @@ private fun AutoReadStatusCard(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        if (isExpired) onRestartAutoRead() else onToggleAutoRead()
-                    }
-                ) {
-                    Text(if (isExpired) "Restart 2h" else if (autoReadEnabled) "Pause" else "Resume")
+                OutlinedButton(onClick = onToggleAutoRead) {
+                    Text(if (autoReadEnabled) "Pause" else "Resume")
                 }
                 TextButton(onClick = onDeleteAll) {
                     Text("Delete All", color = Color(0xFFDC2626))
@@ -729,12 +699,22 @@ private fun MailboxRowCard(
             }
 
             val mailContent = mailbox.lastContent
+            val mailError = mailbox.lastError
             if (!mailContent.isNullOrBlank()) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Text(
                     text = mailContent,
                     fontSize = 12.sp,
                     color = Color(0xFF334155),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            } else if (!mailError.isNullOrBlank()) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text(
+                    text = mailError,
+                    fontSize = 12.sp,
+                    color = Color(0xFFDC2626),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
