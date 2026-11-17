@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ClipboardPaste, Mail, Save } from 'lucide-react';
+import { ClipboardPaste, Mail, Save, Trash2 } from 'lucide-react';
 import { MAIL_SERVICE_TYPES, type MailServiceType } from '../types/mail';
 import { parseBulkMailboxInput, parseMailboxInput, validateMailboxFields } from '../utils/mailParser';
 
@@ -14,14 +14,18 @@ export interface SaveMailboxPayload {
 
 interface MailboxFormProps {
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  savedCount: number;
   onSaveMailbox: (data: SaveMailboxPayload) => void;
   onSaveBulkMailboxes: (items: SaveMailboxPayload[]) => void;
+  onDeleteAll: () => void;
 }
 
 export const MailboxForm: React.FC<MailboxFormProps> = ({
   inputRef,
+  savedCount,
   onSaveMailbox,
   onSaveBulkMailboxes,
+  onDeleteAll,
 }) => {
   const [mode, setMode] = useState<'combo' | 'bulk' | 'fields'>('combo');
   const [comboText, setComboText] = useState('');
@@ -357,6 +361,28 @@ export const MailboxForm: React.FC<MailboxFormProps> = ({
               <ClipboardPaste className="w-3.5 h-3.5 text-slate-600" aria-hidden="true" />
               <span>{mode === 'bulk' ? 'Sample Bulk' : 'Load Sample'}</span>
             </button>
+
+            {mode === 'bulk' && (
+              <button
+                type="button"
+                disabled={savedCount === 0 && !bulkText}
+                onClick={() => {
+                  setValidationError(null);
+                  const hadSaved = savedCount > 0;
+                  setBulkText('');
+                  if (hadSaved) {
+                    onDeleteAll();
+                    setSavedFeedback('Deleted all saved mailboxes');
+                  } else {
+                    setSavedFeedback('Cleared bulk box');
+                  }
+                }}
+                className="h-10 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold whitespace-nowrap disabled:opacity-45 disabled:pointer-events-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+              >
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Delete All</span>
+              </button>
+            )}
           </div>
         </div>
 

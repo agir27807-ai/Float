@@ -28,6 +28,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.hotmailreader.app.MainActivity
 import com.hotmailreader.app.R
+import com.hotmailreader.app.data.MailPollUpdate
 import com.hotmailreader.app.data.MailboxRepository
 import com.hotmailreader.app.network.DongvanApiClient
 import com.hotmailreader.app.parser.MailboxParser
@@ -40,6 +41,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicLong
@@ -205,9 +207,17 @@ class FloatingOverlayService : Service() {
                     val metrics = resources.displayMetrics
                     val maxX = (metrics.widthPixels - (overlayView?.width ?: 300)).coerceAtLeast(0)
                     val maxY = (metrics.heightPixels - (overlayView?.height ?: 100)).coerceAtLeast(0)
-                    layoutParams.x = (initialX + dx).coerceIn(0, maxX)
-                    layoutParams.y = (initialY + dy).coerceIn(0, maxY)
-                    overlayView?.let { windowManager.updateViewLayout(it, layoutParams) }
+                    val nextX = (initialX + dx).coerceIn(0, maxX)
+                    val nextY = (initialY + dy).coerceIn(0, maxY)
+                    if (nextX != layoutParams.x || nextY != layoutParams.y) {
+                        layoutParams.x = nextX
+                        layoutParams.y = nextY
+                        overlayView?.let {
+                            if (it.isAttachedToWindow) {
+                                windowManager.updateViewLayout(it, layoutParams)
+                            }
+                        }
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -225,10 +235,20 @@ class FloatingOverlayService : Service() {
     }
 
     private fun observeRepositoryState() {
+        var lastRenderedKey = ""
         serviceScope.launch {
-            repository.mailboxes.collectLatest { list ->
-                val activeId = repository.activeId.value
-                val active = list.firstOrNull { it.id == activeId } ?: list.firstOrNull()
+            combine(repository.mailboxes, repository.activeId) { list, activeId ->
+                list.firstOrNull { it.id == activeId } ?: list.firstOrNull()
+            }.collectLatest { active ->
+                val nextEmail = active?.email.orEmpty()
+                val nextCode = active?.lastCode.orEmpty()
+                val nextService = active?.serviceType.orEmpty()
+                val nextDate = active?.lastDate.orEmpty()
+                val nextContent = active?.lastContent.orEmpty()
+                val key = "$nextEmail|$nextCode|$nextService|$nextDate|$nextContent"
+                if (key == lastRenderedKey && active != null) return@collectLatest
+                lastRenderedKey = key
+
                 if (active == null) {
                     currentEmail = ""
                     currentCode = ""
@@ -238,41 +258,29 @@ class FloatingOverlayService : Service() {
                     txtPreviewDate?.text = ""
                     txtPreviewContent?.text = "Save Hotmail OAuth2 accounts in the app."
                 } else {
-                    currentEmail = active.email
-                    currentCode = active.lastCode.orEmpty()
-                    txtEmail?.text = active.email
-                    txtOtp?.text = if (currentCode.isNotEmpty()) "OTP: $currentCode" else "OTP: ----"
-                    txtPreviewService?.text = "${active.serviceType.replaceFirstChar { it.uppercase() }} latest mail"
-                    txtPreviewDate?.text = active.lastDate.orEmpty()
-                    txtPreviewContent?.text = active.lastContent
-                        ?: "Auto-reading saved mailboxes every 3s for up to 2 hours."
+                    currentEmail = nextEmail
+                    currentCode = nextCode
+                    txtEmail?.text = nextEmail
+                    txtOtp?.text = if (nextCode.isNotEmpty()) "OTP: $nextCode" else "OTP: ----"
+                    txtPreviewService?.text = "${nextService.replaceFirstChar { it.uppercase() }} latest mail"
+                    txtPreviewDate?.text = nextDate
+                    txtPreviewContent?.text = nextContent.ifEmpty {
+                        "Auto-reading saved mailboxes every 3s for up to 2 hours."
+                    }
                 }
-            }
-        }
-
-        serviceScope.launch {
-            repository.activeId.collectLatest { activeId ->
-                val active = repository.mailboxes.value.firstOrNull { it.id == activeId } ?: return@collectLatest
-                currentEmail = active.email
-                currentCode = active.lastCode.orEmpty()
-                txtEmail?.text = active.email
-                txtOtp?.text = if (currentCode.isNotEmpty()) "OTP: $currentCode" else "OTP: ----"
-                txtPreviewService?.text = "${active.serviceType.replaceFirstChar { it.uppercase() }} latest mail"
-                txtPreviewDate?.text = active.lastDate.orEmpty()
-                txtPreviewContent?.text = active.lastContent
-                    ?: "Auto-reading saved mailboxes every 3s for up to 2 hours."
             }
         }
     }
 
     private fun startAutoPollLoop() {
         pollJob?.cancel()
-        pollJob = serviceScope.launch {
+        pollJob = serviceScope.launch(Dispatchers.IO) {
             while (isActive) {
                 if (repository.isAutoReadActive()) {
                     val snapshot = repository.mailboxes.value
-                    snapshot.chunked(3).forEach { batch ->
-                        batch.map { account ->
+                    snapshot.chunked(4).forEach { batch ->
+                        if (!isActive || !repository.isAutoReadActive()) return@forEach
+                        val updates = batch.map { account ->
                             async {
                                 val res = DongvanApiClient.fetchCode(account)
                                 if (res.status) {
@@ -283,7 +291,7 @@ class FloatingOverlayService : Service() {
                                         nextContent = res.content,
                                         nextDate = res.date
                                     )
-                                    repository.updateMailResult(
+                                    MailPollUpdate(
                                         id = account.id,
                                         code = code,
                                         content = res.content,
@@ -291,9 +299,15 @@ class FloatingOverlayService : Service() {
                                         isNewCode = isNew,
                                         receivedSeq = arrivalSeq.incrementAndGet()
                                     )
+                                } else {
+                                    null
                                 }
                             }
-                        }.awaitAll()
+                        }.awaitAll().filterNotNull()
+
+                        if (updates.isNotEmpty()) {
+                            repository.updateMailResultsBatch(updates)
+                        }
                     }
                 }
                 delay(MailboxParser.AUTO_POLL_INTERVAL_MS)

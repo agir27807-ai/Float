@@ -4,15 +4,33 @@ import android.content.Context
 import com.hotmailreader.app.model.MailboxAccount
 import com.hotmailreader.app.parser.MailboxParser
 import com.hotmailreader.app.parser.ParsedMailbox
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+data class MailPollUpdate(
+    val id: String,
+    val code: String,
+    val content: String?,
+    val date: String?,
+    val isNewCode: Boolean,
+    val receivedSeq: Long
+)
+
 class MailboxRepository private constructor(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lock = Any()
+    private var persistJob: Job? = null
 
     private val _mailboxes = MutableStateFlow<List<MailboxAccount>>(emptyList())
     val mailboxes: StateFlow<List<MailboxAccount>> = _mailboxes.asStateFlow()
@@ -34,54 +52,65 @@ class MailboxRepository private constructor(context: Context) {
         _mailboxes.value = loaded
         _activeId.value = prefs.getString(KEY_ACTIVE_ID, null) ?: loaded.firstOrNull()?.id
         val savedStart = prefs.getLong(KEY_AUTOREAD_START, -1L)
-        _autoReadStartedAt.value = if (savedStart > 0L) savedStart else if (loaded.isNotEmpty()) System.currentTimeMillis() else null
+        _autoReadStartedAt.value =
+            if (savedStart > 0L) savedStart else if (loaded.isNotEmpty()) System.currentTimeMillis() else null
         _autoReadEnabled.value = prefs.getBoolean(KEY_AUTOREAD_ENABLED, true)
     }
 
-    @Synchronized
     fun saveMailboxes(items: List<ParsedMailbox>, serviceType: String) {
         if (items.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val current = _mailboxes.value.toMutableList()
-        var newestId: String? = null
-
-        for (item in items.reversed()) {
-            val existingIdx = current.indexOfFirst { it.email.equals(item.email, ignoreCase = true) }
-            if (existingIdx >= 0) {
-                val updated = current[existingIdx].copy(
-                    email = item.email,
-                    password = item.password,
-                    refreshToken = item.refreshToken,
-                    clientId = item.clientId,
-                    serviceType = serviceType
-                )
-                current[existingIdx] = updated
-                newestId = updated.id
-            } else {
-                val created = MailboxAccount(
-                    id = UUID.randomUUID().toString(),
-                    email = item.email,
-                    password = item.password,
-                    refreshToken = item.refreshToken,
-                    clientId = item.clientId,
-                    serviceType = serviceType,
-                    createdAt = now
-                )
-                current.add(0, created)
-                newestId = created.id
+        synchronized(lock) {
+            val now = System.currentTimeMillis()
+            val current = _mailboxes.value.toMutableList()
+            val indexByEmail = HashMap<String, Int>(current.size * 2)
+            current.forEachIndexed { idx, acc ->
+                indexByEmail[acc.email.lowercase()] = idx
             }
-        }
+            var newestId: String? = null
 
-        _mailboxes.value = current
-        if (newestId != null) {
-            _activeId.value = newestId
+            for (item in items.reversed()) {
+                val existingIdx = indexByEmail[item.email.lowercase()]
+                if (existingIdx != null) {
+                    val updated = current[existingIdx].copy(
+                        email = item.email,
+                        password = item.password,
+                        refreshToken = item.refreshToken,
+                        clientId = item.clientId,
+                        serviceType = serviceType
+                    )
+                    current[existingIdx] = updated
+                    newestId = updated.id
+                } else {
+                    val created = MailboxAccount(
+                        id = UUID.randomUUID().toString(),
+                        email = item.email,
+                        password = item.password,
+                        refreshToken = item.refreshToken,
+                        clientId = item.clientId,
+                        serviceType = serviceType,
+                        createdAt = now
+                    )
+                    current.add(0, created)
+                    // Shift existing index map or rebuild only if needed; add at 0 shifts indices,
+                    // so lookup directly on small additions or rebuild index map cleanly.
+                    indexByEmail.clear()
+                    current.forEachIndexed { idx, acc ->
+                        indexByEmail[acc.email.lowercase()] = idx
+                    }
+                    newestId = created.id
+                }
+            }
+
+            _mailboxes.value = current
+            if (newestId != null) {
+                _activeId.value = newestId
+            }
+            _autoReadStartedAt.value = now
+            _autoReadEnabled.value = true
+            schedulePersist(immediate = true)
         }
-        _autoReadStartedAt.value = now
-        _autoReadEnabled.value = true
-        persistAll()
     }
 
-    @Synchronized
     fun updateMailResult(
         id: String,
         code: String,
@@ -90,64 +119,118 @@ class MailboxRepository private constructor(context: Context) {
         isNewCode: Boolean,
         receivedSeq: Long
     ) {
-        val current = _mailboxes.value.map { account ->
-            if (account.id == id) {
-                account.copy(
-                    lastCode = code.ifEmpty { account.lastCode },
-                    lastContent = content?.takeIf { it.isNotBlank() }
-                        ?: if (code.isNotEmpty()) "$code confirmation code" else account.lastContent,
-                    lastDate = date?.takeIf { it.isNotBlank() } ?: account.lastDate,
-                    lastFetchedAt = System.currentTimeMillis(),
-                    lastCodeReceivedAt = if (isNewCode) receivedSeq else account.lastCodeReceivedAt
+        updateMailResultsBatch(
+            listOf(
+                MailPollUpdate(
+                    id = id,
+                    code = code,
+                    content = content,
+                    date = date,
+                    isNewCode = isNewCode,
+                    receivedSeq = receivedSeq
                 )
-            } else {
-                account
+            )
+        )
+    }
+
+    fun updateMailResultsBatch(updates: List<MailPollUpdate>) {
+        if (updates.isEmpty()) return
+        synchronized(lock) {
+            val updateMap = updates.associateBy { it.id }
+            var listChanged = false
+            var newestActiveId: String? = null
+            var newestSeq = Long.MIN_VALUE
+            val now = System.currentTimeMillis()
+
+            val nextList = _mailboxes.value.map { account ->
+                val upd = updateMap[account.id] ?: return@map account
+                val nextCode = upd.code.ifEmpty { account.lastCode }
+                val nextContent = upd.content?.takeIf { it.isNotBlank() }
+                    ?: if (upd.code.isNotEmpty()) "${upd.code} confirmation code" else account.lastContent
+                val nextDate = upd.date?.takeIf { it.isNotBlank() } ?: account.lastDate
+                val nextSeq = if (upd.isNewCode) upd.receivedSeq else account.lastCodeReceivedAt
+
+                if (upd.isNewCode && upd.code.isNotEmpty() && upd.receivedSeq >= newestSeq) {
+                    newestSeq = upd.receivedSeq
+                    newestActiveId = account.id
+                }
+
+                if (nextCode != account.lastCode ||
+                    nextContent != account.lastContent ||
+                    nextDate != account.lastDate ||
+                    nextSeq != account.lastCodeReceivedAt
+                ) {
+                    listChanged = true
+                    account.copy(
+                        lastCode = nextCode,
+                        lastContent = nextContent,
+                        lastDate = nextDate,
+                        lastFetchedAt = now,
+                        lastCodeReceivedAt = nextSeq
+                    )
+                } else {
+                    account
+                }
+            }
+
+            var activeChanged = false
+            if (newestActiveId != null && _activeId.value != newestActiveId) {
+                _activeId.value = newestActiveId
+                activeChanged = true
+            }
+
+            if (listChanged) {
+                _mailboxes.value = nextList
+            }
+
+            if (listChanged || activeChanged) {
+                schedulePersist(immediate = false)
             }
         }
-        _mailboxes.value = current
-        if (isNewCode && code.isNotEmpty()) {
-            _activeId.value = id
-        }
-        persistAll()
     }
 
-    @Synchronized
     fun selectActive(id: String) {
-        if (_mailboxes.value.any { it.id == id }) {
-            _activeId.value = id
-            persistAll()
+        synchronized(lock) {
+            if (_mailboxes.value.any { it.id == id } && _activeId.value != id) {
+                _activeId.value = id
+                schedulePersist(immediate = false)
+            }
         }
     }
 
-    @Synchronized
     fun deleteMailbox(id: String) {
-        val next = _mailboxes.value.filterNot { it.id == id }
-        _mailboxes.value = next
-        if (_activeId.value == id) {
-            _activeId.value = next.firstOrNull()?.id
+        synchronized(lock) {
+            val next = _mailboxes.value.filterNot { it.id == id }
+            _mailboxes.value = next
+            if (_activeId.value == id) {
+                _activeId.value = next.firstOrNull()?.id
+            }
+            schedulePersist(immediate = true)
         }
-        persistAll()
     }
 
-    @Synchronized
     fun clearAll() {
-        _mailboxes.value = emptyList()
-        _activeId.value = null
-        _autoReadStartedAt.value = null
-        persistAll()
+        synchronized(lock) {
+            _mailboxes.value = emptyList()
+            _activeId.value = null
+            _autoReadStartedAt.value = null
+            schedulePersist(immediate = true)
+        }
     }
 
-    @Synchronized
     fun toggleAutoRead() {
-        _autoReadEnabled.value = !_autoReadEnabled.value
-        persistAll()
+        synchronized(lock) {
+            _autoReadEnabled.value = !_autoReadEnabled.value
+            schedulePersist(immediate = true)
+        }
     }
 
-    @Synchronized
     fun restartAutoRead() {
-        _autoReadStartedAt.value = System.currentTimeMillis()
-        _autoReadEnabled.value = true
-        persistAll()
+        synchronized(lock) {
+            _autoReadStartedAt.value = System.currentTimeMillis()
+            _autoReadEnabled.value = true
+            schedulePersist(immediate = true)
+        }
     }
 
     fun setOverlayRunning(running: Boolean) {
@@ -169,9 +252,34 @@ class MailboxRepository private constructor(context: Context) {
         prefs.edit().putInt(KEY_OVERLAY_X, x).putInt(KEY_OVERLAY_Y, y).apply()
     }
 
-    private fun persistAll() {
+    private fun schedulePersist(immediate: Boolean) {
+        val snapshotMailboxes = _mailboxes.value
+        val snapshotActiveId = _activeId.value
+        val snapshotStart = _autoReadStartedAt.value
+        val snapshotEnabled = _autoReadEnabled.value
+
+        persistJob?.cancel()
+        persistJob = ioScope.launch {
+            if (!immediate) {
+                delay(350)
+            }
+            writeSnapshotToPrefs(
+                mailboxes = snapshotMailboxes,
+                activeId = snapshotActiveId,
+                autoReadStart = snapshotStart,
+                autoReadEnabled = snapshotEnabled
+            )
+        }
+    }
+
+    private fun writeSnapshotToPrefs(
+        mailboxes: List<MailboxAccount>,
+        activeId: String?,
+        autoReadStart: Long?,
+        autoReadEnabled: Boolean
+    ) {
         val arr = JSONArray()
-        for (m in _mailboxes.value) {
+        for (m in mailboxes) {
             val obj = JSONObject().apply {
                 put("id", m.id)
                 put("email", m.email)
@@ -190,9 +298,9 @@ class MailboxRepository private constructor(context: Context) {
         }
         prefs.edit()
             .putString(KEY_MAILBOXES, arr.toString())
-            .putString(KEY_ACTIVE_ID, _activeId.value)
-            .putLong(KEY_AUTOREAD_START, _autoReadStartedAt.value ?: -1L)
-            .putBoolean(KEY_AUTOREAD_ENABLED, _autoReadEnabled.value)
+            .putString(KEY_ACTIVE_ID, activeId)
+            .putLong(KEY_AUTOREAD_START, autoReadStart ?: -1L)
+            .putBoolean(KEY_AUTOREAD_ENABLED, autoReadEnabled)
             .apply()
     }
 

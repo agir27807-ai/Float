@@ -524,8 +524,10 @@ export default function App() {
           <div className="lg:col-span-5 space-y-6">
             <MailboxForm
               inputRef={comboInputRef}
+              savedCount={mailboxes.length}
               onSaveMailbox={handleSaveMailbox}
               onSaveBulkMailboxes={handleSaveBulkMailboxes}
+              onDeleteAll={handleClearAllMailboxes}
             />
             <SavedMailboxesList
               mailboxes={mailboxes}
