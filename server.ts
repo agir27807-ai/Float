@@ -5,13 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  extractOtpCode,
+  pickBestSmail1sMessage,
+  stripHtmlMessage,
+  type Smail1sRawMessage,
+} from './src/utils/mailParser.ts';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const DONGVAN_ENDPOINT = 'https://tools.dongvanfb.net/api/get_code_oauth2';
+const SMAIL1S_ENDPOINT = 'https://smail1s.com/get_messages';
 
 const SAMPLE_CODES_BY_TYPE: Record<string, { code: string; content: string }> = {
   facebook: {
@@ -77,8 +83,9 @@ include_files = ['gradlew', 'gradlew.bat', 'build.gradle.kts', 'settings.gradle.
 def add_file(zf, full, rel):
     arcname = os.path.join('HotmailFloatingOtpReader', rel)
     st = os.stat(full)
+    mode = 0o755 if rel == 'gradlew' else stat.S_IMODE(st.st_mode)
     zi = zipfile.ZipInfo(arcname)
-    zi.external_attr = (stat.S_IMODE(st.st_mode) & 0xFFFF) << 16
+    zi.external_attr = (mode & 0xFFFF) << 16
     zi.compress_type = zipfile.ZIP_DEFLATED
     with open(full, 'rb') as fp:
         zf.writestr(zi, fp.read())
@@ -113,17 +120,33 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
   app.post('/api/get-code', async (req, res) => {
     const body = req.body as {
       email?: string;
+      password?: string;
       refresh_token?: string;
       client_id?: string;
+      client_secret?: string;
+      mode?: string;
       type?: string;
     };
 
     const email = typeof body?.email === 'string' ? body.email.trim() : '';
+    const password = typeof body?.password === 'string' ? body.password.trim() : '';
     const refresh_token = typeof body?.refresh_token === 'string' ? body.refresh_token.trim() : '';
     const client_id = typeof body?.client_id === 'string' ? body.client_id.trim() : '';
+    const client_secret = typeof body?.client_secret === 'string' ? body.client_secret.trim() : '';
+    const mode =
+      body?.mode === 'graph' || body?.mode === 'roundcube' ? body.mode : 'oauth';
     const type = typeof body?.type === 'string' && body.type.trim() ? body.type.trim() : 'facebook';
 
-    if (!email || !refresh_token || !client_id) {
+    if (mode === 'roundcube') {
+      if (!email || !password) {
+        res.status(400).json({
+          status: false,
+          email,
+          error: 'Missing required fields: email and password are required for Roundcube mode.',
+        });
+        return;
+      }
+    } else if (!email || !refresh_token || !client_id) {
       res.status(400).json({
         status: false,
         email,
@@ -163,26 +186,41 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
 
+    const dataLine =
+      mode === 'roundcube'
+        ? `${email}|${password}`
+        : mode === 'graph' && client_secret
+          ? `${email}|${refresh_token}|${client_id}|${client_secret}`
+          : `${email}|${refresh_token}|${client_id}`;
+
     try {
-      const upstream = await fetch(DONGVAN_ENDPOINT, {
+      const upstream = await fetch(SMAIL1S_ENDPOINT, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
         body: JSON.stringify({
-          email,
-          refresh_token,
-          client_id,
-          type,
+          mode,
+          data: dataLine,
         }),
         signal: controller.signal,
       });
 
       const rawText = await upstream.text();
-      let parsed: Record<string, unknown>;
+      let parsed: {
+        data?: Array<{
+          email?: string | null;
+          error?: string | null;
+          mailSource?: string;
+          messages?: Smail1sRawMessage[];
+        }>;
+        error?: string;
+        message?: string;
+      };
+
       try {
-        parsed = JSON.parse(rawText) as Record<string, unknown>;
+        parsed = JSON.parse(rawText);
       } catch {
         res.status(upstream.ok ? 502 : upstream.status).json({
           status: false,
@@ -192,24 +230,55 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
         return;
       }
 
-      if (!upstream.ok) {
-        res.status(upstream.status).json({
+      const firstEntry =
+        Array.isArray(parsed.data) && parsed.data.length > 0
+          ? (parsed.data.find((entry) => entry.email?.toLowerCase() === email.toLowerCase()) ??
+            parsed.data[0])
+          : undefined;
+
+      if (!upstream.ok || firstEntry?.error) {
+        res.status(upstream.ok ? 200 : upstream.status).json({
           status: false,
           email,
-          ...parsed,
           error:
-            (typeof parsed.error === 'string' && parsed.error) ||
-            (typeof parsed.message === 'string' && parsed.message) ||
+            firstEntry?.error ||
+            parsed.error ||
+            parsed.message ||
             `Upstream API returned HTTP ${upstream.status}`,
         });
         return;
       }
 
-      res.json(parsed);
+      const messages = Array.isArray(firstEntry?.messages) ? firstEntry.messages : [];
+      const best = pickBestSmail1sMessage(messages, type);
+      if (!best) {
+        res.json({
+          email,
+          status: false,
+          error: `No matching ${type} verification mail found yet.`,
+        });
+        return;
+      }
+
+      const plainBody = stripHtmlMessage(best.message);
+      const subject = (best.subject ?? '').trim();
+      const content = plainBody || subject;
+      const code = extractOtpCode(best.code, `${subject} ${plainBody}`);
+
+      res.json({
+        email: firstEntry?.email || email,
+        status: true,
+        code,
+        content,
+        date: (best.date ?? '').trim() || undefined,
+        uid: (best.uid ?? '').trim() || undefined,
+        from: (best.from ?? '').trim() || undefined,
+        subject: subject || undefined,
+      });
     } catch (err) {
       const message =
         err instanceof Error && err.name === 'AbortError'
-          ? 'Request to dongvanfb API timed out after 20 seconds.'
+          ? 'Request to smail1s API timed out after 20 seconds.'
           : err instanceof Error
             ? err.message
             : 'Failed to reach Hotmail OAuth2 API.';

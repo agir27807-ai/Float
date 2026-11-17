@@ -30,14 +30,12 @@ import com.hotmailreader.app.MainActivity
 import com.hotmailreader.app.R
 import com.hotmailreader.app.data.MailPollUpdate
 import com.hotmailreader.app.data.MailboxRepository
-import com.hotmailreader.app.network.DongvanApiClient
+import com.hotmailreader.app.network.Smail1sApiClient
 import com.hotmailreader.app.parser.MailboxParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -278,33 +276,30 @@ class FloatingOverlayService : Service() {
             while (isActive) {
                 if (repository.isAutoReadActive()) {
                     val snapshot = repository.mailboxes.value
-                    snapshot.chunked(4).forEach { batch ->
+                    snapshot.chunked(15).forEach { batch ->
                         if (!isActive || !repository.isAutoReadActive()) return@forEach
-                        val updates = batch.map { account ->
-                            async {
-                                val res = DongvanApiClient.fetchCode(account)
-                                if (res.status) {
-                                    val code = MailboxParser.extractOtpCode(res.code, res.content)
-                                    val isNew = MailboxParser.hasNewMailCode(
-                                        prev = account,
-                                        nextCode = code,
-                                        nextContent = res.content,
-                                        nextDate = res.date
-                                    )
-                                    MailPollUpdate(
-                                        id = account.id,
-                                        code = code,
-                                        content = res.content,
-                                        date = res.date,
-                                        isNewCode = isNew,
-                                        receivedSeq = arrivalSeq.incrementAndGet()
-                                    )
-                                } else {
-                                    null
-                                }
-                            }
-                        }.awaitAll().filterNotNull()
-
+                        val responseMap = Smail1sApiClient.fetchMessagesBatch(batch)
+                        val updates = batch.mapNotNull { account ->
+                            val res = responseMap[account.id] ?: return@mapNotNull null
+                            if (!res.status) return@mapNotNull null
+                            val code = MailboxParser.extractOtpCode(res.code, res.content)
+                            val isNew = MailboxParser.hasNewMailCode(
+                                prev = account,
+                                nextCode = code,
+                                nextContent = res.content,
+                                nextDate = res.date,
+                                nextUid = res.uid
+                            )
+                            MailPollUpdate(
+                                id = account.id,
+                                code = code,
+                                content = res.content,
+                                date = res.date,
+                                uid = res.uid,
+                                isNewCode = isNew,
+                                receivedSeq = arrivalSeq.incrementAndGet()
+                            )
+                        }
                         if (updates.isNotEmpty()) {
                             repository.updateMailResultsBatch(updates)
                         }

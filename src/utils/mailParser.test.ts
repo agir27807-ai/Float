@@ -9,9 +9,12 @@ import {
   getNextMailboxIndex,
   hasNewMailCode,
   isAutoReadActive,
+  matchesServiceFilter,
   parseBulkMailboxInput,
   parseMailboxInput,
+  pickBestSmail1sMessage,
   selectLatestIncomingMailboxId,
+  stripHtmlMessage,
   validateMailboxFields,
 } from './mailParser';
 
@@ -156,4 +159,76 @@ test('isAutoReadActive enforces 2-hour window and 3-second polling constants', (
   assert.equal(isAutoReadActive(start, start + 3000, false, 2), false);
   assert.equal(isAutoReadActive(start, start + 3000, true, 0), false);
   assert.equal(formatRemainingTime(start, start + 60_000), '1h 59m');
+});
+
+test('stripHtmlMessage removes style/tags and normalizes entities for smail1s bodies', () => {
+  const html =
+    '<html><head><style>.a{color:red}</style></head><body><p>37589 is your&nbsp;Facebook &amp; Meta code.</p></body></html>';
+  assert.equal(stripHtmlMessage(html), '37589 is your Facebook & Meta code.');
+});
+
+test('pickBestSmail1sMessage filters by serviceType, prefers newest date, and extracts OTP', () => {
+  const messages = [
+    {
+      uid: 'u1',
+      from: 'Microsoft <account-security@accountprotection.microsoft.com>',
+      subject: 'Your security info was updated',
+      date: '2026-05-23 11:00:00',
+      message: 'Your code 1234',
+      code: '1234',
+    },
+    {
+      uid: 'u2',
+      from: 'Facebook <registration@facebookmail.com>',
+      subject: 'FB-48192 is your confirmation code',
+      date: '2026-05-23 10:55:00',
+      message: '<p>Enter <b>48192</b> to confirm your Facebook account.</p>',
+      code: null,
+    },
+    {
+      uid: 'u3',
+      from: 'Facebook <security@facebookmail.com>',
+      subject: '99301 is your Facebook code',
+      date: '2026-05-23 11:05:00',
+      message: '<p>99301 is your Facebook confirmation code</p>',
+      code: '99301',
+    },
+  ];
+
+  const pickedFb = pickBestSmail1sMessage(messages, 'facebook');
+  assert.equal(pickedFb?.uid, 'u3');
+  assert.equal(extractOtpCode(pickedFb?.code, pickedFb?.message), '99301');
+
+  assert.equal(matchesServiceFilter(messages[0]!, 'facebook'), false);
+  assert.equal(matchesServiceFilter(messages[1]!, 'facebook'), true);
+  assert.equal(
+    hasNewMailCode(
+      { lastCode: '99301', lastUid: 'u3', lastDate: '2026-05-23 11:05:00' },
+      { code: '99301', uid: 'u4', date: '2026-05-23 11:05:00' }
+    ),
+    true
+  );
+});
+
+test('parseMailboxInput distinguishes Graph 4-part (email|refresh_token|client_id|client_secret) and Roundcube 2-part', () => {
+  const longToken = 'M.C540_BAY.0.U.LongGraphRefreshTokenValue1234567890';
+  const graphRes = parseMailboxInput(
+    `graph@outlook.com|${longToken}|client-uuid-123|secret-xyz`,
+    'graph'
+  );
+  assert.equal(graphRes.ok, true);
+  if (graphRes.ok) {
+    assert.equal(graphRes.value.email, 'graph@outlook.com');
+    assert.equal(graphRes.value.refresh_token, longToken);
+    assert.equal(graphRes.value.client_id, 'client-uuid-123');
+    assert.equal(graphRes.value.client_secret, 'secret-xyz');
+    assert.equal(graphRes.value.password, undefined);
+  }
+
+  const rcRes = parseMailboxInput('user@wmhotmail.com|mySecretPass', 'roundcube');
+  assert.equal(rcRes.ok, true);
+  if (rcRes.ok) {
+    assert.equal(rcRes.value.email, 'user@wmhotmail.com');
+    assert.equal(rcRes.value.password, 'mySecretPass');
+  }
 });

@@ -198,6 +198,10 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500 mt-0.5">
+                      <span className="uppercase font-medium text-slate-600 whitespace-nowrap">
+                        {mailbox.connectionMode ?? 'oauth'}
+                      </span>
+                      <span aria-hidden="true">·</span>
                       <span className="capitalize whitespace-nowrap">{mailbox.serviceType}</span>
                       {mailbox.lastDate && (
                         <>

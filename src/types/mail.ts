@@ -16,17 +16,24 @@ export const MAIL_SERVICE_TYPES = [
 
 export type MailServiceType = (typeof MAIL_SERVICE_TYPES)[number];
 
+export const MAIL_CONNECTION_MODES = ['oauth', 'graph', 'roundcube'] as const;
+
+export type MailConnectionMode = (typeof MAIL_CONNECTION_MODES)[number];
+
 export interface MailboxAccount {
   id: string;
   email: string;
   password?: string;
   refresh_token: string;
   client_id: string;
+  client_secret?: string;
+  connectionMode: MailConnectionMode;
   serviceType: MailServiceType;
   createdAt: number;
   lastCode?: string;
   lastContent?: string;
   lastDate?: string;
+  lastUid?: string;
   lastFetchedAt?: number;
   lastCodeReceivedAt?: number;
   isDemo?: boolean;
@@ -39,6 +46,9 @@ export interface MailReadResponse {
   code?: string;
   content?: string;
   date?: string;
+  uid?: string;
+  from?: string;
+  subject?: string;
   message?: string;
   error?: string;
 }

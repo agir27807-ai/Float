@@ -22,6 +22,7 @@ data class MailPollUpdate(
     val code: String,
     val content: String?,
     val date: String?,
+    val uid: String? = null,
     val isNewCode: Boolean,
     val receivedSeq: Long
 )
@@ -57,7 +58,11 @@ class MailboxRepository private constructor(context: Context) {
         _autoReadEnabled.value = prefs.getBoolean(KEY_AUTOREAD_ENABLED, true)
     }
 
-    fun saveMailboxes(items: List<ParsedMailbox>, serviceType: String) {
+    fun saveMailboxes(
+        items: List<ParsedMailbox>,
+        serviceType: String,
+        connectionMode: String = "oauth"
+    ) {
         if (items.isEmpty()) return
         synchronized(lock) {
             val now = System.currentTimeMillis()
@@ -76,6 +81,8 @@ class MailboxRepository private constructor(context: Context) {
                         password = item.password,
                         refreshToken = item.refreshToken,
                         clientId = item.clientId,
+                        clientSecret = item.clientSecret,
+                        connectionMode = connectionMode,
                         serviceType = serviceType
                     )
                     current[existingIdx] = updated
@@ -87,12 +94,12 @@ class MailboxRepository private constructor(context: Context) {
                         password = item.password,
                         refreshToken = item.refreshToken,
                         clientId = item.clientId,
+                        clientSecret = item.clientSecret,
+                        connectionMode = connectionMode,
                         serviceType = serviceType,
                         createdAt = now
                     )
                     current.add(0, created)
-                    // Shift existing index map or rebuild only if needed; add at 0 shifts indices,
-                    // so lookup directly on small additions or rebuild index map cleanly.
                     indexByEmail.clear()
                     current.forEachIndexed { idx, acc ->
                         indexByEmail[acc.email.lowercase()] = idx
@@ -116,6 +123,7 @@ class MailboxRepository private constructor(context: Context) {
         code: String,
         content: String?,
         date: String?,
+        uid: String? = null,
         isNewCode: Boolean,
         receivedSeq: Long
     ) {
@@ -126,6 +134,7 @@ class MailboxRepository private constructor(context: Context) {
                     code = code,
                     content = content,
                     date = date,
+                    uid = uid,
                     isNewCode = isNewCode,
                     receivedSeq = receivedSeq
                 )
@@ -148,6 +157,7 @@ class MailboxRepository private constructor(context: Context) {
                 val nextContent = upd.content?.takeIf { it.isNotBlank() }
                     ?: if (upd.code.isNotEmpty()) "${upd.code} confirmation code" else account.lastContent
                 val nextDate = upd.date?.takeIf { it.isNotBlank() } ?: account.lastDate
+                val nextUid = upd.uid?.takeIf { it.isNotBlank() } ?: account.lastUid
                 val nextSeq = if (upd.isNewCode) upd.receivedSeq else account.lastCodeReceivedAt
 
                 if (upd.isNewCode && upd.code.isNotEmpty() && upd.receivedSeq >= newestSeq) {
@@ -158,6 +168,7 @@ class MailboxRepository private constructor(context: Context) {
                 if (nextCode != account.lastCode ||
                     nextContent != account.lastContent ||
                     nextDate != account.lastDate ||
+                    nextUid != account.lastUid ||
                     nextSeq != account.lastCodeReceivedAt
                 ) {
                     listChanged = true
@@ -165,6 +176,7 @@ class MailboxRepository private constructor(context: Context) {
                         lastCode = nextCode,
                         lastContent = nextContent,
                         lastDate = nextDate,
+                        lastUid = nextUid,
                         lastFetchedAt = now,
                         lastCodeReceivedAt = nextSeq
                     )
@@ -286,11 +298,14 @@ class MailboxRepository private constructor(context: Context) {
                 put("password", m.password ?: "")
                 put("refreshToken", m.refreshToken)
                 put("clientId", m.clientId)
+                put("clientSecret", m.clientSecret ?: "")
+                put("connectionMode", m.connectionMode)
                 put("serviceType", m.serviceType)
                 put("createdAt", m.createdAt)
                 put("lastCode", m.lastCode ?: "")
                 put("lastContent", m.lastContent ?: "")
                 put("lastDate", m.lastDate ?: "")
+                put("lastUid", m.lastUid ?: "")
                 put("lastFetchedAt", m.lastFetchedAt ?: -1L)
                 put("lastCodeReceivedAt", m.lastCodeReceivedAt ?: -1L)
             }
@@ -320,11 +335,14 @@ class MailboxRepository private constructor(context: Context) {
                             password = obj.optString("password", "").takeIf { it.isNotEmpty() },
                             refreshToken = obj.getString("refreshToken"),
                             clientId = obj.getString("clientId"),
+                            clientSecret = obj.optString("clientSecret", "").takeIf { it.isNotEmpty() },
+                            connectionMode = obj.optString("connectionMode", "oauth"),
                             serviceType = obj.optString("serviceType", "facebook"),
                             createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
                             lastCode = obj.optString("lastCode", "").takeIf { it.isNotEmpty() },
                             lastContent = obj.optString("lastContent", "").takeIf { it.isNotEmpty() },
                             lastDate = obj.optString("lastDate", "").takeIf { it.isNotEmpty() },
+                            lastUid = obj.optString("lastUid", "").takeIf { it.isNotEmpty() },
                             lastFetchedAt = if (fetched > 0) fetched else null,
                             lastCodeReceivedAt = if (received > 0) received else null
                         )

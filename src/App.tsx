@@ -173,8 +173,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: target.email,
+          password: target.password,
           refresh_token: target.refresh_token,
           client_id: target.client_id,
+          client_secret: target.client_secret,
+          mode: target.connectionMode ?? 'oauth',
           type: target.serviceType,
         }),
       });
@@ -190,6 +193,7 @@ export default function App() {
         code: extractedCode,
         content: data.content,
         date: data.date,
+        uid: data.uid,
       });
 
       const receivedAt = isNewCode ? ++arrivalSeqRef.current : currentSnapshot.lastCodeReceivedAt;
@@ -204,6 +208,7 @@ export default function App() {
                   data.content ||
                   (extractedCode ? `${extractedCode} confirmation code` : m.lastContent),
                 lastDate: data.date || m.lastDate,
+                lastUid: data.uid || m.lastUid,
                 lastFetchedAt: Date.now(),
                 lastCodeReceivedAt: receivedAt,
               }
@@ -305,6 +310,8 @@ export default function App() {
         password: data.password,
         refresh_token: data.refresh_token,
         client_id: data.client_id,
+        client_secret: data.client_secret,
+        connectionMode: data.connectionMode,
         serviceType: data.serviceType,
         createdAt: now,
         isDemo: data.isDemo,
@@ -346,6 +353,8 @@ export default function App() {
             password: item.password,
             refresh_token: item.refresh_token,
             client_id: item.client_id,
+            client_secret: item.client_secret,
+            connectionMode: item.connectionMode,
             serviceType: item.serviceType,
             createdAt: now,
             isDemo: item.isDemo,
@@ -570,19 +579,17 @@ export default function App() {
               className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6"
             >
               <h2 id="api-reference-heading" className="text-base font-bold text-slate-900">
-                OAuth2 API Connection
+                smail1s API Connection (OAuth2 / Graph / Roundcube)
               </h2>
               <p className="text-xs text-slate-600 mt-1">
-                Requests are proxied server-side to <code className="font-mono text-slate-800">tools.dongvanfb.net/api/get_code_oauth2</code> every 3 seconds for up to 2 hours.
+                Requests are proxied server-side to <code className="font-mono text-slate-800">smail1s.com/get_messages</code> every 3 seconds for up to 2 hours.
               </p>
 
               <div className="mt-3 p-3.5 rounded-xl bg-slate-950 text-slate-200 font-mono text-xs overflow-x-auto leading-relaxed">
-                <pre>{`POST /api/get-code -> https://tools.dongvanfb.net/api/get_code_oauth2
+                <pre>{`POST /api/get-code -> https://smail1s.com/get_messages
 {
-  "email": "dsfsd45t4dfg@hotmail.com",
-  "refresh_token": "M.C518_BAY.0.U.-...",
-  "client_id": "5464fghj-bnmm-jh56-56fh-454345sdff",
-  "type": "${activeMailbox?.serviceType ?? 'facebook'}"
+  "mode": "oauth" | "graph" | "roundcube",
+  "data": "user@outlook.com|refresh_token|client_id|client_secret"
 }`}</pre>
               </div>
             </section>

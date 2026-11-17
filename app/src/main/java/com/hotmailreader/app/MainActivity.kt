@@ -66,14 +66,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.hotmailreader.app.data.MailPollUpdate
 import com.hotmailreader.app.data.MailboxRepository
+import com.hotmailreader.app.model.MailConnectionModes
 import com.hotmailreader.app.model.MailServiceTypes
 import com.hotmailreader.app.model.MailboxAccount
+import com.hotmailreader.app.network.Smail1sApiClient
 import com.hotmailreader.app.parser.MailboxParser
 import com.hotmailreader.app.parser.SingleParseResult
 import com.hotmailreader.app.service.FloatingOverlayService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -170,11 +174,54 @@ fun HotmailReaderScreen(
     var selectedTab by remember { mutableIntStateOf(0) } // 0 = Single, 1 = Bulk
     var singleInput by remember { mutableStateOf("") }
     var bulkInput by remember { mutableStateOf("") }
+    var connectionMode by remember { mutableStateOf(MailConnectionModes.OAUTH) }
     var serviceType by remember { mutableStateOf("facebook") }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    // Auto-read every 3s for up to 2 hours when overlay service is not running
+    LaunchedEffect(overlayRunning, mailboxes.isNotEmpty(), autoReadEnabled, autoReadStartedAt) {
+        if (overlayRunning || !repository.isAutoReadActive()) return@LaunchedEffect
+        var seq = System.currentTimeMillis()
+        while (isActive && !overlayRunning && repository.isAutoReadActive()) {
+            val snapshot = repository.mailboxes.value
+            if (snapshot.isNotEmpty()) {
+                withContext(Dispatchers.IO) {
+                    snapshot.chunked(15).forEach { batch ->
+                        if (!isActive || !repository.isAutoReadActive()) return@forEach
+                        val responseMap = Smail1sApiClient.fetchMessagesBatch(batch)
+                        val updates = batch.mapNotNull { account ->
+                            val res = responseMap[account.id] ?: return@mapNotNull null
+                            if (!res.status) return@mapNotNull null
+                            val code = MailboxParser.extractOtpCode(res.code, res.content)
+                            val isNew = MailboxParser.hasNewMailCode(
+                                prev = account,
+                                nextCode = code,
+                                nextContent = res.content,
+                                nextDate = res.date,
+                                nextUid = res.uid
+                            )
+                            MailPollUpdate(
+                                id = account.id,
+                                code = code,
+                                content = res.content,
+                                date = res.date,
+                                uid = res.uid,
+                                isNewCode = isNew,
+                                receivedSeq = ++seq
+                            )
+                        }
+                        if (updates.isNotEmpty()) {
+                            repository.updateMailResultsBatch(updates)
+                        }
+                    }
+                }
+            }
+            delay(MailboxParser.AUTO_POLL_INTERVAL_MS)
+        }
+    }
 
     val copyCodeToClipboard = remember(context) {
         { code: String ->
@@ -268,10 +315,15 @@ fun HotmailReaderScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         if (selectedTab == 0) {
+                            val singleLabel = when (connectionMode) {
+                                MailConnectionModes.ROUNDCUBE -> "email|password"
+                                MailConnectionModes.GRAPH -> "email|refresh_token|client_id|client_secret"
+                                else -> "email|password|refresh_token|client_id"
+                            }
                             OutlinedTextField(
                                 value = singleInput,
                                 onValueChange = { singleInput = it; errorMessage = null },
-                                label = { Text("email|password|refresh_token|client_id") },
+                                label = { Text(singleLabel) },
                                 textStyle = TextStyle(
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace
@@ -325,6 +377,37 @@ fun HotmailReaderScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            MailConnectionModes.ALL.forEach { modeOption ->
+                                val selected = connectionMode == modeOption
+                                val labelText = when (modeOption) {
+                                    MailConnectionModes.GRAPH -> "Graph"
+                                    MailConnectionModes.ROUNDCUBE -> "Roundcube"
+                                    else -> "OAuth"
+                                }
+                                OutlinedButton(
+                                    onClick = { connectionMode = modeOption; errorMessage = null },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (selected) Color(0xFF2563EB) else Color(0xFFCBD5E1)
+                                    ),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = if (selected) Color(0xFFEFF6FF) else Color.White,
+                                        contentColor = if (selected) Color(0xFF1D4ED8) else Color(0xFF475569)
+                                    )
+                                ) {
+                                    Text(labelText, fontSize = 12.sp, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Box(modifier = Modifier.fillMaxWidth()) {
                             OutlinedButton(
                                 onClick = { dropdownExpanded = true },
@@ -360,19 +443,24 @@ fun HotmailReaderScreen(
                                 onClick = {
                                     errorMessage = null
                                     statusMessage = null
+                                    val modeSnapshot = connectionMode
                                     scope.launch {
                                         isSaving = true
                                         val res = withContext(Dispatchers.Default) {
-                                            MailboxParser.parseSingle(singleInput)
+                                            MailboxParser.parseSingle(singleInput, modeSnapshot)
                                         }
                                         when (res) {
                                             is SingleParseResult.Error -> errorMessage = res.message
                                             is SingleParseResult.Success -> {
                                                 withContext(Dispatchers.IO) {
-                                                    repository.saveMailboxes(listOf(res.mailbox), serviceType)
+                                                    repository.saveMailboxes(
+                                                        listOf(res.mailbox),
+                                                        serviceType,
+                                                        modeSnapshot
+                                                    )
                                                 }
                                                 singleInput = ""
-                                                statusMessage = "Saved ${res.mailbox.email}"
+                                                statusMessage = "Saved ${res.mailbox.email} ($modeSnapshot)"
                                             }
                                         }
                                         isSaving = false
@@ -394,10 +482,11 @@ fun HotmailReaderScreen(
                                         errorMessage = null
                                         statusMessage = null
                                         val rawText = bulkInput
+                                        val modeSnapshot = connectionMode
                                         scope.launch {
                                             isSaving = true
                                             val bulk = withContext(Dispatchers.Default) {
-                                                MailboxParser.parseBulk(rawText)
+                                                MailboxParser.parseBulk(rawText, modeSnapshot)
                                             }
                                             if (bulk.valid.isEmpty()) {
                                                 val first = bulk.errors.firstOrNull()
@@ -405,10 +494,14 @@ fun HotmailReaderScreen(
                                                     ?: "Paste one or more valid Hotmail lines."
                                             } else {
                                                 withContext(Dispatchers.IO) {
-                                                    repository.saveMailboxes(bulk.valid, serviceType)
+                                                    repository.saveMailboxes(
+                                                        bulk.valid,
+                                                        serviceType,
+                                                        modeSnapshot
+                                                    )
                                                 }
                                                 bulkInput = ""
-                                                statusMessage = "Saved ${bulk.valid.size} mailboxes"
+                                                statusMessage = "Saved ${bulk.valid.size} mailboxes ($modeSnapshot)"
                                             }
                                             isSaving = false
                                         }
@@ -610,7 +703,7 @@ private fun MailboxRowCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${mailbox.serviceType} · ${mailbox.lastDate ?: "Waiting for mail"}",
+                        text = "${mailbox.connectionMode} · ${mailbox.serviceType} · ${mailbox.lastDate ?: "Waiting for mail"}",
                         fontSize = 12.sp,
                         color = Color(0xFF64748B),
                         maxLines = 1,
