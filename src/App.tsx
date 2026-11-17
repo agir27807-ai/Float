@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Eye, EyeOff } from 'lucide-react';
+import { Download, Eye, EyeOff, Smartphone } from 'lucide-react';
 import { FloatingReaderBar } from './components/FloatingReaderBar';
 import { LatestMailCard } from './components/LatestMailCard';
 import { MailboxForm, type SaveMailboxPayload } from './components/MailboxForm';
@@ -467,6 +467,9 @@ export default function App() {
             <a href="#api-reference-section" className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0">
               API Format
             </a>
+            <a href="#android-export-section" className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0">
+              Android App
+            </a>
           </nav>
 
           <div className="flex items-center shrink-0">
@@ -579,6 +582,35 @@ export default function App() {
   "client_id": "5464fghj-bnmm-jh56-56fh-454345sdff",
   "type": "${activeMailbox?.serviceType ?? 'facebook'}"
 }`}</pre>
+              </div>
+            </section>
+
+            <section
+              id="android-export-section"
+              aria-labelledby="android-export-heading"
+              className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-emerald-700" aria-hidden="true" />
+                    <h2 id="android-export-heading" className="text-base font-bold text-slate-900">
+                      Native Android Kotlin Project (Overlay APK Source)
+                    </h2>
+                  </div>
+                  <p className="text-xs text-slate-600 mt-1 max-w-xl">
+                    Downloads a clean, standalone Native Android Kotlin project (<code className="font-mono text-slate-800">gradlew</code>, <code className="font-mono text-slate-800">app/</code>, <code className="font-mono text-slate-800">FloatingOverlayService.kt</code> with <code className="font-mono text-slate-800">SYSTEM_ALERT_WINDOW</code>) with zero web files—ready to push directly to GitHub or open in Android Studio.
+                  </p>
+                </div>
+
+                <a
+                  href="/api/download-android-project"
+                  download="HotmailFloatingOtpReader-Android.zip"
+                  className="h-10 inline-flex items-center justify-center gap-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
+                >
+                  <Download className="w-4 h-4" aria-hidden="true" />
+                  <span>Download Pure Android (.zip)</span>
+                </a>
               </div>
             </section>
           </div>

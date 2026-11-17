@@ -2,3 +2,12 @@ node_modules
 dist
 .env
 .playwright-cli/
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+*.aab
+.idea/
+*.iml
+captures/

@@ -1,7 +1,12 @@
 import express from 'express';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
+const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -50,6 +55,59 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get('/api/download-android-project', async (_req, res) => {
+    const gradlewPath = path.resolve(__dirname, 'gradlew');
+    const appDirPath = path.resolve(__dirname, 'app');
+    if (!fs.existsSync(gradlewPath) || !fs.existsSync(appDirPath)) {
+      res.status(404).json({ error: 'Native Android project files not found.' });
+      return;
+    }
+    const zipPath = path.join(os.tmpdir(), 'hotmail-floating-otp-reader-android.zip');
+    try {
+      await execFileAsync('python3', [
+        '-c',
+        `import os, stat, sys, zipfile
+root_dir = sys.argv[1]
+dst = sys.argv[2]
+include_dirs = ['app', 'gradle']
+include_files = ['gradlew', 'gradlew.bat', 'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'README.md']
+
+def add_file(zf, full, rel):
+    arcname = os.path.join('HotmailFloatingOtpReader', rel)
+    st = os.stat(full)
+    zi = zipfile.ZipInfo(arcname)
+    zi.external_attr = (stat.S_IMODE(st.st_mode) & 0xFFFF) << 16
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    with open(full, 'rb') as fp:
+        zf.writestr(zi, fp.read())
+
+with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for fname in include_files:
+        full = os.path.join(root_dir, fname)
+        if os.path.isfile(full):
+            add_file(zf, full, fname)
+    for dname in include_dirs:
+        dpath = os.path.join(root_dir, dname)
+        if not os.path.isdir(dpath):
+            continue
+        for root, dirs, files in os.walk(dpath):
+            dirs[:] = sorted([d for d in dirs if d not in ('.gradle', 'build', '.idea')])
+            for f in sorted(files):
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, root_dir)
+                add_file(zf, full, rel)
+`,
+        __dirname,
+        zipPath,
+      ]);
+      res.download(zipPath, 'HotmailFloatingOtpReader-Android.zip');
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to package Android project.',
+      });
+    }
   });
 
   app.post('/api/get-code', async (req, res) => {

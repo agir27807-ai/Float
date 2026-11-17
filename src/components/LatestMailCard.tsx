@@ -87,7 +87,7 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
             <MailOpen className="w-7 h-7 text-slate-400 mx-auto mb-2" aria-hidden="true" />
             <p className="text-sm font-semibold text-slate-800">No active Hotmail account</p>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              Add an OAuth2 mailbox in the Mail Box panel on the left, then click Read Latest Mail or REF on the floating bar.
+              Add one or more OAuth2 mailboxes in the Mail Box panel on the left to start 3-second auto-reading.
             </p>
           </div>
         ) : loading ? (
