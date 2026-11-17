@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -55,8 +56,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -167,9 +170,11 @@ fun HotmailReaderScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "Hotmail Floating OTP Reader",
+                        text = "Hotmail OTP Reader",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
+                        fontSize = 17.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 actions = {
@@ -248,16 +253,56 @@ fun HotmailReaderScreen(
                                 value = singleInput,
                                 onValueChange = { singleInput = it; errorMessage = null },
                                 label = { Text("email|password|refresh_token|client_id") },
-                                modifier = Modifier.fillMaxWidth(),
-                                minLines = 3
+                                textStyle = TextStyle(
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                singleLine = false,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 88.dp, max = 120.dp)
                             )
                         } else {
+                            val lineCount = remember(bulkInput) {
+                                bulkInput.lines().count { it.isNotBlank() }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "$lineCount ${if (lineCount == 1) "account" else "accounts"} pasted",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF64748B)
+                                )
+                                if (bulkInput.isNotEmpty()) {
+                                    Text(
+                                        text = "Clear input",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFFDC2626),
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.clickable {
+                                            bulkInput = ""
+                                            errorMessage = null
+                                        }
+                                    )
+                                }
+                            }
                             OutlinedTextField(
                                 value = bulkInput,
                                 onValueChange = { bulkInput = it; errorMessage = null },
                                 label = { Text("Bulk Mail Box (one account per line)") },
-                                modifier = Modifier.fillMaxWidth(),
-                                minLines = 5
+                                textStyle = TextStyle(
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                singleLine = false,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 132.dp, max = 160.dp)
                             )
                         }
 
