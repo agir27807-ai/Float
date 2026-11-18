@@ -15,6 +15,7 @@ import { copyTextToClipboard } from './utils/clipboard';
 import {
   AUTO_POLL_INTERVAL_MS,
   clampFloatingPosition,
+  extractEmailAddress,
   extractOtpCode,
   hasNewMailCode,
   isAutoReadActive,
@@ -128,7 +129,9 @@ export default function App() {
 
   const handleCopyEmail = useCallback(
     (email: string) => {
-      void triggerCopyFeedback(`email:${email}`, email);
+      const pureEmail = extractEmailAddress(email);
+      if (!pureEmail) return;
+      void triggerCopyFeedback(`email:${pureEmail}`, pureEmail);
     },
     [triggerCopyFeedback]
   );
@@ -216,7 +219,7 @@ export default function App() {
     if (list.length === 0 || pollInFlightRef.current) return;
 
     pollInFlightRef.current = true;
-    const batchSize = 3;
+    const batchSize = 6;
 
     try {
       for (let i = 0; i < list.length; i += batchSize) {
@@ -555,6 +558,7 @@ export default function App() {
               onDelete={handleDeleteMailbox}
               onClearAll={handleClearAllMailboxes}
               onCopyOtp={handleCopyOtp}
+              onCopyEmail={handleCopyEmail}
             />
           </div>
 
@@ -569,6 +573,7 @@ export default function App() {
               onChangeServiceType={handleChangeServiceType}
               onRefresh={() => void fetchLatestForMailbox()}
               onCopyOtp={handleCopyOtp}
+              onCopyEmail={handleCopyEmail}
             />
 
             <section

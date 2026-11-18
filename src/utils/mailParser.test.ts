@@ -180,3 +180,11 @@ test('parseMailboxInput handles Graph 4-part, swapped client_id|refresh_token, a
     assert.equal(swappedRes.value.client_id, '9e5f94bc-e8a4-4e73-b8be-63364c29d753');
   }
 });
+
+test('extractEmailAddress extracts strictly the email address without pipes, brackets, or mail text', async () => {
+  const { extractEmailAddress } = await import('./mailParser');
+  assert.equal(extractEmailAddress('user@outlook.de'), 'user@outlook.de');
+  assert.equal(extractEmailAddress('John <user@hotmail.com>'), 'user@hotmail.com');
+  assert.equal(extractEmailAddress('user@outlook.fr|pass|M.C518_BAY|cid'), 'user@outlook.fr');
+  assert.equal(extractEmailAddress('  user@live.com  648860 code'), 'user@live.com');
+});

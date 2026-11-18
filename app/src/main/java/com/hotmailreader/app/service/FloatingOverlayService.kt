@@ -41,8 +41,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 
 class FloatingOverlayService : Service() {
@@ -69,6 +71,7 @@ class FloatingOverlayService : Service() {
     private var currentCode: String = ""
     private var currentEmail: String = ""
     private var isMinimizedToCircle: Boolean = false
+    private var activeToast: Toast? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -166,8 +169,14 @@ class FloatingOverlayService : Service() {
         }
 
         txtEmail?.setOnClickListener {
-            if (currentEmail.isNotEmpty()) {
-                copyToClipboard("Hotmail", currentEmail)
+            val pureEmail = MailboxParser.extractEmailAddress(currentEmail)
+            if (pureEmail.isNotEmpty()) {
+                copyToClipboard("Email Address", pureEmail)
+                txtEmail?.text = "Copied email!"
+                serviceScope.launch {
+                    delay(1_200)
+                    txtEmail?.text = currentEmail.ifEmpty { "No mail saved" }
+                }
             }
         }
 
@@ -363,7 +372,7 @@ class FloatingOverlayService : Service() {
             while (isActive) {
                 if (repository.isAutoReadActive()) {
                     val snapshot = repository.mailboxes.value
-                    snapshot.chunked(10).forEach { batch ->
+                    snapshot.chunked(16).forEach { batch ->
                         if (!isActive || !repository.isAutoReadActive()) return@forEach
                         val responseMap = DongvanApiClient.fetchMessagesBatch(batch)
                         val updates = batch.mapNotNull { account ->
@@ -399,7 +408,9 @@ class FloatingOverlayService : Service() {
                         }
                     }
                 }
-                delay(MailboxParser.AUTO_POLL_INTERVAL_MS)
+                withTimeoutOrNull(MailboxParser.AUTO_POLL_INTERVAL_MS) {
+                    repository.pollTrigger.first()
+                }
             }
         }
     }
@@ -407,7 +418,8 @@ class FloatingOverlayService : Service() {
     private fun copyToClipboard(label: String, value: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(this, "Copied $value", Toast.LENGTH_SHORT).show()
+        activeToast?.cancel()
+        activeToast = Toast.makeText(this, "Copied $value", Toast.LENGTH_SHORT).also { it.show() }
     }
 
     private fun createNotificationChannel() {

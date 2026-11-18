@@ -17,9 +17,17 @@ export type ParseResult =
   | { ok: false; error: string };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const INLINE_EMAIL_PATTERN = /[^\s@<>|;:]+@[^\s@<>|;:]+\.[^\s@<>|;:]+/;
 
 export function isValidEmail(email: string): boolean {
   return EMAIL_PATTERN.test(email.trim());
+}
+
+export function extractEmailAddress(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(INLINE_EMAIL_PATTERN);
+  return match ? match[0] : trimmed.split(/[\s|;:]+/)[0] ?? '';
 }
 
 export function isValidServiceType(value: string): value is MailServiceType {

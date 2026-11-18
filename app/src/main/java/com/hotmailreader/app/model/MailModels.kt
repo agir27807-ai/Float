@@ -1,5 +1,7 @@
 package com.hotmailreader.app.model
 
+import androidx.compose.runtime.Immutable
+
 object MailServiceTypes {
     val ALL = listOf(
         "facebook",
@@ -26,6 +28,7 @@ object MailConnectionModes {
     val ALL = listOf(AUTO, OAUTH, GRAPH)
 }
 
+@Immutable
 data class MailboxAccount(
     val id: String,
     val email: String,

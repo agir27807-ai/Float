@@ -17,6 +17,7 @@ interface LatestMailCardProps {
   onChangeServiceType: (serviceType: MailServiceType) => void;
   onRefresh: () => void;
   onCopyOtp: (code: string) => void;
+  onCopyEmail: (email: string) => void;
 }
 
 function formatConnectionModeLabel(mode?: MailConnectionMode): string {
@@ -34,10 +35,12 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
   onChangeServiceType,
   onRefresh,
   onCopyOtp,
+  onCopyEmail,
 }) => {
   const code = activeMailbox?.lastCode || '';
   const hasCode = Boolean(code);
   const isCopied = hasCode && copiedValue === `otp:${code}`;
+  const isEmailCopied = Boolean(activeMailbox?.email && copiedValue === `email:${activeMailbox.email}`);
   const displayError = error || (!hasCode && !activeMailbox?.lastContent ? activeMailbox?.lastError || null : null);
 
   return (
@@ -53,7 +56,20 @@ export const LatestMailCard: React.FC<LatestMailCardProps> = ({
           </h2>
           {activeMailbox ? (
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
-              <span className="font-medium text-slate-700">{activeMailbox.email}</span>
+              <button
+                type="button"
+                onClick={() => onCopyEmail(activeMailbox.email)}
+                aria-label={`Copy email ${activeMailbox.email}`}
+                title="Tap to copy email"
+                className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-blue-700 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              >
+                <span>{isEmailCopied ? 'Copied email' : activeMailbox.email}</span>
+                {isEmailCopied ? (
+                  <Check className="w-3 h-3 text-emerald-600" aria-hidden="true" />
+                ) : (
+                  <Copy className="w-3 h-3 text-slate-400" aria-hidden="true" />
+                )}
+              </button>
               <span aria-hidden="true">·</span>
               <span>{formatConnectionModeLabel(activeMailbox.connectionMode)}</span>
               <span aria-hidden="true">·</span>

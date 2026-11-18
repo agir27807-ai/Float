@@ -10,8 +10,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -46,6 +49,9 @@ class MailboxRepository private constructor(context: Context) {
 
     private val _overlayRunning = MutableStateFlow(false)
     val overlayRunning: StateFlow<Boolean> = _overlayRunning.asStateFlow()
+
+    private val _pollTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val pollTrigger: SharedFlow<Unit> = _pollTrigger.asSharedFlow()
 
     init {
         val loaded = loadMailboxesFromPrefs()
@@ -109,6 +115,7 @@ class MailboxRepository private constructor(context: Context) {
                 _activeId.value = newestId
             }
             _autoReadEnabled.value = true
+            _pollTrigger.tryEmit(Unit)
             schedulePersist(immediate = true)
         }
     }
@@ -240,7 +247,11 @@ class MailboxRepository private constructor(context: Context) {
 
     fun toggleAutoRead() {
         synchronized(lock) {
-            _autoReadEnabled.value = !_autoReadEnabled.value
+            val next = !_autoReadEnabled.value
+            _autoReadEnabled.value = next
+            if (next) {
+                _pollTrigger.tryEmit(Unit)
+            }
             schedulePersist(immediate = true)
         }
     }

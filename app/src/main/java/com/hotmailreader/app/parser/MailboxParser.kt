@@ -30,6 +30,7 @@ object MailboxParser {
     const val AUTO_POLL_INTERVAL_MS = 3_000L
 
     private val EMAIL_REGEX = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
+    private val INLINE_EMAIL_REGEX = Regex("[^\\s@<>|;:]+@[^\\s@<>|;:]+\\.[^\\s@<>|;:]+")
     private val UUID_CLIENT_REGEX = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOption.IGNORE_CASE)
     private val FB_CODE_REGEX = Regex("\\bFB-(\\d{4,8})\\b", RegexOption.IGNORE_CASE)
     private val DIGIT_CODE_REGEX = Regex("\\b(\\d{4,8})\\b")
@@ -39,6 +40,12 @@ object MailboxParser {
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     fun isValidEmail(email: String): Boolean = EMAIL_REGEX.matches(email.trim())
+
+    fun extractEmailAddress(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        return INLINE_EMAIL_REGEX.find(trimmed)?.value ?: trimmed.split(WHITESPACE_REGEX)[0]
+    }
 
     private fun looksLikeRefreshToken(value: String): Boolean {
         val v = value.trim()

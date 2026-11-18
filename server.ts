@@ -51,6 +51,9 @@ function formatDemoDate(date: Date): string {
   return `${hh}:${mm} - ${dd}/${mo}/${yyyy}`;
 }
 
+const preferredEndpointByEmail = new Map<string, string>();
+const DONGVAN_TIMEOUT_MS = 12_000;
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -177,9 +180,16 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
       error?: string;
     };
 
-    async function callDongvan(endpoint: string): Promise<DongvanResult> {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const payloadBody = JSON.stringify({
+      email,
+      refresh_token,
+      client_id,
+      type,
+    });
+
+    async function callDongvan(endpoint: string, externalController?: AbortController): Promise<DongvanResult> {
+      const controller = externalController ?? new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), DONGVAN_TIMEOUT_MS);
       try {
         const upstream = await fetch(endpoint, {
           method: 'POST',
@@ -187,12 +197,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          body: JSON.stringify({
-            email,
-            refresh_token,
-            client_id,
-            type,
-          }),
+          body: payloadBody,
           signal: controller.signal,
         });
 
@@ -246,7 +251,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
       } catch (err) {
         const message =
           err instanceof Error && err.name === 'AbortError'
-            ? 'Request to dongvanfb API timed out after 20 seconds.'
+            ? 'Request to dongvanfb API timed out or cancelled.'
             : err instanceof Error
               ? err.message
               : 'Failed to reach Hotmail OAuth2/Graph API.';
@@ -267,6 +272,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
         res.status(r.httpStatus).json({ status: false, email: r.email, error: r.error });
         return;
       }
+      preferredEndpointByEmail.set(email.toLowerCase(), DONGVAN_GRAPH_ENDPOINT);
       res.json({
         email: r.email,
         password: r.password,
@@ -284,6 +290,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
         res.status(r.httpStatus).json({ status: false, email: r.email, error: r.error });
         return;
       }
+      preferredEndpointByEmail.set(email.toLowerCase(), DONGVAN_OAUTH_ENDPOINT);
       res.json({
         email: r.email,
         password: r.password,
@@ -295,42 +302,114 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
       return;
     }
 
-    // Auto mode: try OAuth2 first, then automatically fall back to Graph API
-    const oauthRes = await callDongvan(DONGVAN_OAUTH_ENDPOINT);
-    if (oauthRes.ok) {
-      res.json({
-        email: oauthRes.email,
-        password: oauthRes.password,
-        status: true,
-        code: oauthRes.code,
-        content: oauthRes.content,
-        date: oauthRes.date,
+    // Auto mode: use cached working endpoint first, otherwise race OAuth2 & Graph in parallel
+    const emailKey = email.toLowerCase();
+    const cachedEndpoint = preferredEndpointByEmail.get(emailKey);
+    if (cachedEndpoint) {
+      const first = await callDongvan(cachedEndpoint);
+      if (first.ok) {
+        res.json({
+          email: first.email,
+          password: first.password,
+          status: true,
+          code: first.code,
+          content: first.content,
+          date: first.date,
+        });
+        return;
+      }
+      const fallbackEndpoint =
+        cachedEndpoint === DONGVAN_OAUTH_ENDPOINT ? DONGVAN_GRAPH_ENDPOINT : DONGVAN_OAUTH_ENDPOINT;
+      const second = await callDongvan(fallbackEndpoint);
+      if (second.ok) {
+        preferredEndpointByEmail.set(emailKey, fallbackEndpoint);
+        res.json({
+          email: second.email,
+          password: second.password,
+          status: true,
+          code: second.code,
+          content: second.content,
+          date: second.date,
+        });
+        return;
+      }
+      const oauthRes = cachedEndpoint === DONGVAN_OAUTH_ENDPOINT ? first : second;
+      const graphRes = cachedEndpoint === DONGVAN_GRAPH_ENDPOINT ? first : second;
+      const combinedError =
+        oauthRes.error === graphRes.error
+          ? oauthRes.error
+          : `OAuth2: ${oauthRes.error} | Graph: ${graphRes.error}`;
+      res.status(graphRes.httpStatus === 200 ? 200 : graphRes.httpStatus).json({
+        status: false,
+        email,
+        error: combinedError,
       });
       return;
     }
 
-    const graphRes = await callDongvan(DONGVAN_GRAPH_ENDPOINT);
-    if (graphRes.ok) {
-      res.json({
-        email: graphRes.email,
-        password: graphRes.password,
-        status: true,
-        code: graphRes.code,
-        content: graphRes.content,
-        date: graphRes.date,
+    const oauthController = new AbortController();
+    const graphController = new AbortController();
+    let settled = false;
+    let oauthResult: DongvanResult | null = null;
+    let graphResult: DongvanResult | null = null;
+
+    await new Promise<void>((resolve) => {
+      const maybeFinishFail = () => {
+        if (settled || !oauthResult || !graphResult) return;
+        settled = true;
+        const combinedError =
+          oauthResult.error === graphResult.error
+            ? oauthResult.error
+            : `OAuth2: ${oauthResult.error} | Graph: ${graphResult.error}`;
+        res.status(graphResult.httpStatus === 200 ? 200 : graphResult.httpStatus).json({
+          status: false,
+          email,
+          error: combinedError,
+        });
+        resolve();
+      };
+
+      void callDongvan(DONGVAN_OAUTH_ENDPOINT, oauthController).then((r) => {
+        oauthResult = r;
+        if (settled) return;
+        if (r.ok) {
+          settled = true;
+          preferredEndpointByEmail.set(emailKey, DONGVAN_OAUTH_ENDPOINT);
+          graphController.abort();
+          res.json({
+            email: r.email,
+            password: r.password,
+            status: true,
+            code: r.code,
+            content: r.content,
+            date: r.date,
+          });
+          resolve();
+          return;
+        }
+        maybeFinishFail();
       });
-      return;
-    }
 
-    const combinedError =
-      oauthRes.error === graphRes.error
-        ? oauthRes.error
-        : `OAuth2: ${oauthRes.error} | Graph: ${graphRes.error}`;
-
-    res.status(graphRes.httpStatus === 200 ? 200 : graphRes.httpStatus).json({
-      status: false,
-      email,
-      error: combinedError,
+      void callDongvan(DONGVAN_GRAPH_ENDPOINT, graphController).then((r) => {
+        graphResult = r;
+        if (settled) return;
+        if (r.ok) {
+          settled = true;
+          preferredEndpointByEmail.set(emailKey, DONGVAN_GRAPH_ENDPOINT);
+          oauthController.abort();
+          res.json({
+            email: r.email,
+            password: r.password,
+            status: true,
+            code: r.code,
+            content: r.content,
+            date: r.date,
+          });
+          resolve();
+          return;
+        }
+        maybeFinishFail();
+      });
     });
   });
 

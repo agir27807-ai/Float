@@ -16,6 +16,7 @@ interface SavedMailboxesListProps {
   onDelete: (id: string) => void;
   onClearAll: () => void;
   onCopyOtp: (code: string) => void;
+  onCopyEmail: (email: string) => void;
 }
 
 export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
@@ -32,6 +33,7 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
   onDelete,
   onClearAll,
   onCopyOtp,
+  onCopyEmail,
 }) => {
   const [confirmClear, setConfirmClear] = useState(false);
 
@@ -148,6 +150,8 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
             const hasCode = Boolean(mailbox.lastCode);
             const isCopied = hasCode && copiedValue === `otp:${mailbox.lastCode}`;
 
+            const isEmailCopied = copiedValue === `email:${mailbox.email}`;
+
             return (
               <li
                 key={mailbox.id}
@@ -158,19 +162,35 @@ export const SavedMailboxesList: React.FC<SavedMailboxesListProps> = ({
                 <div className="min-w-0 flex-1">
                   <button
                     type="button"
-                    onClick={() => onSelect(mailbox.id)}
-                    aria-label={`Select ${mailbox.email}`}
+                    onClick={() => {
+                      onSelect(mailbox.id);
+                      onCopyEmail(mailbox.email);
+                    }}
+                    aria-label={`Copy and select ${mailbox.email}`}
+                    title={`Tap to copy ${mailbox.email}`}
                     className="text-left w-full group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 rounded-md"
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <span
                         className={`text-sm font-semibold truncate ${
-                          isActive ? 'text-blue-700' : 'text-slate-900 group-hover:text-blue-700'
+                          isEmailCopied
+                            ? 'text-emerald-700'
+                            : isActive
+                              ? 'text-blue-700'
+                              : 'text-slate-900 group-hover:text-blue-700'
                         }`}
                       >
                         {mailbox.email}
                       </span>
-                      {isActive && (
+                      {isEmailCopied ? (
+                        <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-700 shrink-0">
+                          <Check className="w-3 h-3" aria-hidden="true" />
+                          Copied
+                        </span>
+                      ) : (
+                        <Copy className="w-3 h-3 text-slate-400 group-hover:text-blue-600 shrink-0" aria-hidden="true" />
+                      )}
+                      {isActive && !isEmailCopied && (
                         <span className="text-[11px] font-semibold text-blue-700 shrink-0">Active</span>
                       )}
                     </div>
