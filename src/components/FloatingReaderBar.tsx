@@ -28,13 +28,16 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
 }) => {
   const barRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [viewportHeight, setViewportHeight] = useState(() =>
     typeof window !== 'undefined' ? window.innerHeight : 900
   );
 
+  const suppressClickRef = useRef(false);
   const dragStateRef = useRef<{
     active: boolean;
+    moved: boolean;
     pointerId: number | null;
     startX: number;
     startY: number;
@@ -42,6 +45,7 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
     originY: number;
   }>({
     active: false,
+    moved: false,
     pointerId: null,
     startX: 0,
     startY: 0,
@@ -56,7 +60,7 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
       const rect = barRef.current.getBoundingClientRect();
       const clamped = clampFloatingPosition(
         position,
-        { width: rect.width || 340, height: rect.height || 52 },
+        { width: rect.width || (minimized ? 46 : 340), height: rect.height || 46 },
         { width: window.innerWidth, height: window.innerHeight },
         8
       );
@@ -75,13 +79,15 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
       window.removeEventListener('resize', syncBounds);
       observer?.disconnect();
     };
-  }, [position, expanded, visible, activeMailbox?.email, activeMailbox?.lastCode, onPositionChange]);
+  }, [position, expanded, minimized, visible, activeMailbox?.email, activeMailbox?.lastCode, onPositionChange]);
 
   const handleDragStart = (e: React.PointerEvent<HTMLElement>) => {
-    e.preventDefault();
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    suppressClickRef.current = false;
     e.currentTarget.setPointerCapture(e.pointerId);
     dragStateRef.current = {
       active: true,
+      moved: false,
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
@@ -97,10 +103,15 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
 
     const dx = e.clientX - state.startX;
     const dy = e.clientY - state.startY;
+    if (!state.moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+      state.moved = true;
+    }
+    if (!state.moved) return;
+
     const rect = barRef.current?.getBoundingClientRect();
     const clamped = clampFloatingPosition(
       { x: state.originX + dx, y: state.originY + dy },
-      { width: rect?.width || 320, height: rect?.height || 52 },
+      { width: rect?.width || (minimized ? 46 : 320), height: rect?.height || 46 },
       { width: window.innerWidth, height: window.innerHeight },
       8
     );
@@ -113,9 +124,28 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
+    if (state.moved) {
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 60);
+    }
     dragStateRef.current.active = false;
+    dragStateRef.current.moved = false;
     dragStateRef.current.pointerId = null;
     setIsDragging(false);
+  };
+
+  const handleToggleCircle = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    setMinimized((prev) => {
+      const next = !prev;
+      if (next) setExpanded(false);
+      return next;
+    });
   };
 
   if (!visible) return null;
@@ -131,6 +161,7 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
     <div
       ref={barRef}
       data-testid="floating-reader-bar"
+      data-minimized={minimized ? 'true' : 'false'}
       style={{
         transform: `translate3d(${Math.round(position.x)}px, ${Math.round(position.y)}px, 0)`,
       }}
@@ -140,82 +171,96 @@ export const FloatingReaderBar: React.FC<FloatingReaderBarProps> = ({
         isDragging ? 'transition-none' : 'transition-shadow duration-150'
       }`}
     >
-      {/* Compact Movable Floating Bar (no CHG / REF buttons — auto-updates on latest incoming code) */}
-      <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 rounded-2xl bg-[#1d1b19]/95 backdrop-blur-xl text-white border border-white/15 shadow-[0_14px_38px_rgba(0,0,0,0.38)]">
-        {/* 4-Way Move Handle */}
+      {/* Compact Movable Floating Bar OR Minimized Circle */}
+      <div
+        className={`flex items-center bg-[#1d1b19]/95 backdrop-blur-xl text-white border border-white/15 shadow-[0_14px_38px_rgba(0,0,0,0.38)] ${
+          minimized
+            ? 'w-12 h-12 rounded-full justify-center p-0'
+            : 'gap-1.5 sm:gap-2 px-2.5 py-1.5 rounded-2xl'
+        }`}
+      >
+        {/* 4-Way Move Handle (Drag to move, Click/Tap to toggle Circle mode) */}
         <button
           type="button"
-          aria-label="Move floating reader"
-          title="Drag to move anywhere"
+          aria-label={minimized ? 'Expand floating reader bar' : 'Minimize floating reader to circle'}
+          aria-expanded={!minimized}
+          title={minimized ? 'Click to expand bar · Drag to move' : 'Click to collapse to circle · Drag to move'}
           onPointerDown={handleDragStart}
           onPointerMove={handleDragMove}
           onPointerUp={handleDragEnd}
           onPointerCancel={handleDragEnd}
+          onClick={handleToggleCircle}
           style={{ touchAction: 'none' }}
-          className="flex items-center justify-center w-8 h-8 rounded-xl text-neutral-300 hover:text-white hover:bg-white/10 cursor-grab active:cursor-grabbing shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-        >
-          <Move className="w-4 h-4" aria-hidden="true" />
-        </button>
-
-        {/* Latest-Code Email */}
-        <button
-          type="button"
-          disabled={!activeMailbox}
-          onClick={() => activeMailbox && onCopyEmail(activeMailbox.email)}
-          title={activeMailbox ? `${activeMailbox.email} (click to copy)` : 'No mailbox saved'}
-          aria-label={activeMailbox ? `Copy email ${activeMailbox.email}` : 'No active mailbox'}
-          className="text-left text-xs sm:text-[13px] font-medium text-neutral-100 hover:text-white max-w-[155px] sm:max-w-[230px] truncate px-1.5 py-1 rounded-md hover:bg-white/10 disabled:opacity-60 disabled:cursor-default whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-        >
-          {isEmailCopied
-            ? 'Email copied'
-            : activeMailbox
-              ? activeMailbox.email
-              : 'No mail saved'}
-        </button>
-
-        {/* Lock + OTP Click-to-Copy */}
-        <button
-          type="button"
-          onClick={() => hasOtp && onCopyOtp(otpCode)}
-          disabled={!hasOtp}
-          aria-label={hasOtp ? `Copy OTP code ${otpCode}` : 'Waiting for OTP code'}
-          title={hasOtp ? 'Click to copy OTP code' : 'Auto-reading every 3s for latest code'}
-          className={`flex items-center gap-1.5 px-2.5 h-8 rounded-lg font-mono text-xs sm:text-[13px] font-semibold tabular-nums whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
-            hasOtp
-              ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 cursor-pointer border border-emerald-400/25'
-              : 'bg-white/5 text-emerald-400/80 cursor-default'
+          className={`flex items-center justify-center text-neutral-300 hover:text-white hover:bg-white/10 cursor-grab active:cursor-grabbing shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${
+            minimized ? 'w-12 h-12 rounded-full' : 'w-8 h-8 rounded-xl'
           }`}
         >
-          <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
-          <span className="text-emerald-400/90">OTP:</span>
-          <span data-testid="floating-otp-value" className="text-emerald-300">
-            {isOtpCopied ? 'Copied!' : hasOtp ? otpCode : '----'}
-          </span>
-          {hasOtp && !isOtpCopied && (
-            <Copy className="w-3 h-3 text-emerald-300/75 hidden sm:inline shrink-0" aria-hidden="true" />
-          )}
-          {isOtpCopied && <Check className="w-3.5 h-3.5 text-emerald-300 shrink-0" aria-hidden="true" />}
+          <Move className={minimized ? 'w-5 h-5' : 'w-4 h-4'} aria-hidden="true" />
         </button>
 
-        {/* Expand Latest Mail Preview Toggle */}
-        <button
-          type="button"
-          onClick={() => setExpanded((prev) => !prev)}
-          aria-expanded={expanded}
-          aria-label={expanded ? 'Collapse latest mail preview' : 'Expand latest mail preview'}
-          title="Toggle latest mail preview"
-          className="flex items-center justify-center w-8 h-8 rounded-lg text-neutral-400 hover:text-white hover:bg-white/10 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-        >
-          {expanded ? (
-            <ChevronUp className="w-4 h-4" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="w-4 h-4" aria-hidden="true" />
-          )}
-        </button>
+        {!minimized && (
+          <>
+            {/* Latest-Code Email */}
+            <button
+              type="button"
+              disabled={!activeMailbox}
+              onClick={() => activeMailbox && onCopyEmail(activeMailbox.email)}
+              title={activeMailbox ? `${activeMailbox.email} (click to copy)` : 'No mailbox saved'}
+              aria-label={activeMailbox ? `Copy email ${activeMailbox.email}` : 'No active mailbox'}
+              className="text-left text-xs sm:text-[13px] font-medium text-neutral-100 hover:text-white max-w-[155px] sm:max-w-[230px] truncate px-1.5 py-1 rounded-md hover:bg-white/10 disabled:opacity-60 disabled:cursor-default whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+            >
+              {isEmailCopied
+                ? 'Email copied'
+                : activeMailbox
+                  ? activeMailbox.email
+                  : 'No mail saved'}
+            </button>
+
+            {/* Lock + OTP Click-to-Copy */}
+            <button
+              type="button"
+              onClick={() => hasOtp && onCopyOtp(otpCode)}
+              disabled={!hasOtp}
+              aria-label={hasOtp ? `Copy OTP code ${otpCode}` : 'Waiting for OTP code'}
+              title={hasOtp ? 'Click to copy OTP code' : 'Auto-reading every 3s for latest code'}
+              className={`flex items-center gap-1.5 px-2.5 h-8 rounded-lg font-mono text-xs sm:text-[13px] font-semibold tabular-nums whitespace-nowrap shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                hasOtp
+                  ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 cursor-pointer border border-emerald-400/25'
+                  : 'bg-white/5 text-emerald-400/80 cursor-default'
+              }`}
+            >
+              <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
+              <span className="text-emerald-400/90">OTP:</span>
+              <span data-testid="floating-otp-value" className="text-emerald-300">
+                {isOtpCopied ? 'Copied!' : hasOtp ? otpCode : '----'}
+              </span>
+              {hasOtp && !isOtpCopied && (
+                <Copy className="w-3 h-3 text-emerald-300/75 hidden sm:inline shrink-0" aria-hidden="true" />
+              )}
+              {isOtpCopied && <Check className="w-3.5 h-3.5 text-emerald-300 shrink-0" aria-hidden="true" />}
+            </button>
+
+            {/* Expand Latest Mail Preview Toggle */}
+            <button
+              type="button"
+              onClick={() => setExpanded((prev) => !prev)}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse latest mail preview' : 'Expand latest mail preview'}
+              title="Toggle latest mail preview"
+              className="flex items-center justify-center w-8 h-8 rounded-lg text-neutral-400 hover:text-white hover:bg-white/10 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+            >
+              {expanded ? (
+                <ChevronUp className="w-4 h-4" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="w-4 h-4" aria-hidden="true" />
+              )}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Expandable Latest Mail Preview Drawer attached to floating bar */}
-      {expanded && (
+      {!minimized && expanded && (
         <div
           data-testid="floating-mail-drawer"
           className="p-3 rounded-2xl bg-[#1d1b19]/95 backdrop-blur-xl text-white border border-white/15 shadow-[0_14px_38px_rgba(0,0,0,0.4)] w-full max-w-[420px]"

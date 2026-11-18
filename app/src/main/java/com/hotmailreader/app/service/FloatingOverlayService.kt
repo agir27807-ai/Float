@@ -18,6 +18,7 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -55,6 +56,10 @@ class FloatingOverlayService : Service() {
     private var pollJob: Job? = null
     private val arrivalSeq = AtomicLong(System.currentTimeMillis())
 
+    private var floatingBarContainer: LinearLayout? = null
+    private var dragHandleView: ImageView? = null
+    private var otpChipView: LinearLayout? = null
+    private var togglePreviewBtn: ImageButton? = null
     private var txtEmail: TextView? = null
     private var txtOtp: TextView? = null
     private var previewDrawer: LinearLayout? = null
@@ -63,6 +68,7 @@ class FloatingOverlayService : Service() {
     private var txtPreviewContent: TextView? = null
     private var currentCode: String = ""
     private var currentEmail: String = ""
+    private var isMinimizedToCircle: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -136,6 +142,15 @@ class FloatingOverlayService : Service() {
             y = savedY
         }
 
+        val barContainer = view.findViewById<LinearLayout>(R.id.floatingBarContainer)
+        val dragHandle = view.findViewById<ImageView>(R.id.btnDragHandle)
+        val otpChip = view.findViewById<LinearLayout>(R.id.btnCopyOtp)
+        val toggleBtn = view.findViewById<ImageButton>(R.id.btnTogglePreview)
+
+        floatingBarContainer = barContainer
+        dragHandleView = dragHandle
+        otpChipView = otpChip
+        togglePreviewBtn = toggleBtn
         txtEmail = view.findViewById(R.id.txtFloatingEmail)
         txtOtp = view.findViewById(R.id.txtFloatingOtp)
         previewDrawer = view.findViewById(R.id.previewDrawer)
@@ -143,12 +158,12 @@ class FloatingOverlayService : Service() {
         txtPreviewDate = view.findViewById(R.id.txtPreviewDate)
         txtPreviewContent = view.findViewById(R.id.txtPreviewContent)
 
-        val dragHandle = view.findViewById<ImageView>(R.id.btnDragHandle)
-        val otpChip = view.findViewById<LinearLayout>(R.id.btnCopyOtp)
-        val toggleBtn = view.findViewById<ImageButton>(R.id.btnTogglePreview)
-
         setupDragTouchListener(dragHandle)
-        setupDragTouchListener(view.findViewById(R.id.floatingBarContainer))
+        setupDragTouchListener(barContainer)
+
+        dragHandle.setOnClickListener {
+            toggleCircleMode()
+        }
 
         txtEmail?.setOnClickListener {
             if (currentEmail.isNotEmpty()) {
@@ -179,7 +194,77 @@ class FloatingOverlayService : Service() {
         windowManager.addView(view, layoutParams)
     }
 
+    private fun toggleCircleMode() {
+        isMinimizedToCircle = !isMinimizedToCircle
+        val density = resources.displayMetrics.density
+        val barSizePx = (46f * density).toInt()
+        val padHorizontalPx = (8f * density).toInt()
+
+        val container = floatingBarContainer ?: return
+        val handle = dragHandleView
+
+        if (isMinimizedToCircle) {
+            txtEmail?.visibility = View.GONE
+            otpChipView?.visibility = View.GONE
+            togglePreviewBtn?.visibility = View.GONE
+            previewDrawer?.visibility = View.GONE
+            togglePreviewBtn?.rotation = 0f
+
+            container.setBackgroundResource(R.drawable.bg_floating_circle)
+            container.gravity = Gravity.CENTER
+            container.setPadding(0, 0, 0, 0)
+            container.layoutParams = (container.layoutParams as LinearLayout.LayoutParams).apply {
+                width = barSizePx
+                height = barSizePx
+            }
+            handle?.let {
+                val handleSizePx = (36f * density).toInt()
+                it.layoutParams = (it.layoutParams as LinearLayout.LayoutParams).apply {
+                    width = handleSizePx
+                    height = handleSizePx
+                }
+            }
+        } else {
+            txtEmail?.visibility = View.VISIBLE
+            otpChipView?.visibility = View.VISIBLE
+            togglePreviewBtn?.visibility = View.VISIBLE
+
+            container.setBackgroundResource(R.drawable.bg_floating_bar)
+            container.gravity = Gravity.CENTER_VERTICAL
+            container.setPadding(padHorizontalPx, 0, padHorizontalPx, 0)
+            container.layoutParams = (container.layoutParams as LinearLayout.LayoutParams).apply {
+                width = LinearLayout.LayoutParams.WRAP_CONTENT
+                height = barSizePx
+            }
+            handle?.let {
+                val handleSizePx = (32f * density).toInt()
+                it.layoutParams = (it.layoutParams as LinearLayout.LayoutParams).apply {
+                    width = handleSizePx
+                    height = handleSizePx
+                }
+            }
+        }
+
+        container.requestLayout()
+        overlayView?.post {
+            val view = overlayView ?: return@post
+            if (!view.isAttachedToWindow) return@post
+            val metrics = resources.displayMetrics
+            val maxX = (metrics.widthPixels - view.width).coerceAtLeast(0)
+            val maxY = (metrics.heightPixels - view.height).coerceAtLeast(0)
+            val clampedX = layoutParams.x.coerceIn(0, maxX)
+            val clampedY = layoutParams.y.coerceIn(0, maxY)
+            if (clampedX != layoutParams.x || clampedY != layoutParams.y) {
+                layoutParams.x = clampedX
+                layoutParams.y = clampedY
+                windowManager.updateViewLayout(view, layoutParams)
+                repository.saveOverlayPosition(clampedX, clampedY)
+            }
+        }
+    }
+
     private fun setupDragTouchListener(target: View) {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
@@ -199,20 +284,22 @@ class FloatingOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
-                    if (kotlin.math.abs(dx) > 4 || kotlin.math.abs(dy) > 4) {
+                    if (!moved && (kotlin.math.abs(dx) > touchSlop || kotlin.math.abs(dy) > touchSlop)) {
                         moved = true
                     }
-                    val metrics = resources.displayMetrics
-                    val maxX = (metrics.widthPixels - (overlayView?.width ?: 300)).coerceAtLeast(0)
-                    val maxY = (metrics.heightPixels - (overlayView?.height ?: 100)).coerceAtLeast(0)
-                    val nextX = (initialX + dx).coerceIn(0, maxX)
-                    val nextY = (initialY + dy).coerceIn(0, maxY)
-                    if (nextX != layoutParams.x || nextY != layoutParams.y) {
-                        layoutParams.x = nextX
-                        layoutParams.y = nextY
-                        overlayView?.let {
-                            if (it.isAttachedToWindow) {
-                                windowManager.updateViewLayout(it, layoutParams)
+                    if (moved) {
+                        val metrics = resources.displayMetrics
+                        val maxX = (metrics.widthPixels - (overlayView?.width ?: 300)).coerceAtLeast(0)
+                        val maxY = (metrics.heightPixels - (overlayView?.height ?: 100)).coerceAtLeast(0)
+                        val nextX = (initialX + dx).coerceIn(0, maxX)
+                        val nextY = (initialY + dy).coerceIn(0, maxY)
+                        if (nextX != layoutParams.x || nextY != layoutParams.y) {
+                            layoutParams.x = nextX
+                            layoutParams.y = nextY
+                            overlayView?.let {
+                                if (it.isAttachedToWindow) {
+                                    windowManager.updateViewLayout(it, layoutParams)
+                                }
                             }
                         }
                     }
@@ -224,7 +311,7 @@ class FloatingOverlayService : Service() {
                         true
                     } else {
                         v.performClick()
-                        false
+                        true
                     }
                 }
                 else -> false
